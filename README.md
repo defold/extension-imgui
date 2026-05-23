@@ -29,6 +29,25 @@ The current state of platform support:
 Refer to [example/example.script](/example/example.script) to learn how to use the extension. Also check the bindings in `LuaInit()` in `extension_imgui.cpp`.
 
 
+## Native C/C++ draw callbacks
+Native extensions can register a draw callback invoked after `ImGui::NewFrame()` and before `ImGui::Render()`:
+
+```cpp
+#include "extension_imgui.h"
+#include "imgui/src/imgui/imgui.h"
+
+static void Draw(void* user_data) {
+    ImGui::Begin("Native Window");
+    ImGui::Text("Hello");
+    ImGui::End();
+}
+
+DefoldImGui_RegisterDrawCallback(Draw, 0);
+```
+
+Callbacks run on the render thread/post-render callback where extension-imgui renders. Do not call `ImGui::NewFrame()`, `ImGui::Render()`, or backend render functions from the callback.
+
+
 ### Input
 You need to update the input state in Dear ImGUI each frame to accurately reflect user input:
 

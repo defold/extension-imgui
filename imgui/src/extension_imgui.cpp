@@ -23,6 +23,8 @@
 
 #include <dmsdk/sdk.h>
 
+#include "extension_imgui.h"
+
 #if !defined(DM_HEADLESS)
 
 #define MODULE_NAME "imgui"
@@ -66,6 +68,82 @@ static dmArray<ImFont*> g_imgui_Fonts;
 static dmArray<ImgObject> g_imgui_Images;
 static bool g_VerifyGraphicsCalls   = false;
 static bool g_RenderingEnabled      = true;
+
+#define DEFOLD_IMGUI_MAX_DRAW_CALLBACKS 16
+
+struct DefoldImGuiDrawCallbackEntry
+{
+    DefoldImGuiDrawCallback m_Callback;
+    void*                   m_UserData;
+};
+
+static DefoldImGuiDrawCallbackEntry g_DrawCallbacks[DEFOLD_IMGUI_MAX_DRAW_CALLBACKS];
+
+extern "C" DM_DLLEXPORT bool DefoldImGui_RegisterDrawCallback(DefoldImGuiDrawCallback callback, void* user_data)
+{
+    if (!callback)
+    {
+        return false;
+    }
+
+    // Idempotent registration.
+    for (uint32_t i = 0; i < DEFOLD_IMGUI_MAX_DRAW_CALLBACKS; ++i)
+    {
+        if (g_DrawCallbacks[i].m_Callback == callback &&
+            g_DrawCallbacks[i].m_UserData == user_data)
+        {
+            return true;
+        }
+    }
+
+    for (uint32_t i = 0; i < DEFOLD_IMGUI_MAX_DRAW_CALLBACKS; ++i)
+    {
+        if (!g_DrawCallbacks[i].m_Callback)
+        {
+            g_DrawCallbacks[i].m_Callback = callback;
+            g_DrawCallbacks[i].m_UserData = user_data;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+extern "C" DM_DLLEXPORT void DefoldImGui_UnregisterDrawCallback(DefoldImGuiDrawCallback callback, void* user_data)
+{
+    for (uint32_t i = 0; i < DEFOLD_IMGUI_MAX_DRAW_CALLBACKS; ++i)
+    {
+        if (g_DrawCallbacks[i].m_Callback == callback &&
+            g_DrawCallbacks[i].m_UserData == user_data)
+        {
+            g_DrawCallbacks[i].m_Callback = 0;
+            g_DrawCallbacks[i].m_UserData = 0;
+        }
+    }
+}
+
+static void imgui_InvokeDrawCallbacks()
+{
+    // Iterate by index so callbacks may unregister themselves safely.
+    for (uint32_t i = 0; i < DEFOLD_IMGUI_MAX_DRAW_CALLBACKS; ++i)
+    {
+        DefoldImGuiDrawCallback callback = g_DrawCallbacks[i].m_Callback;
+        void* user_data = g_DrawCallbacks[i].m_UserData;
+        if (callback)
+        {
+            callback(user_data);
+        }
+    }
+}
+
+static void imgui_ClearDrawCallbacks()
+{
+    for (uint32_t i = 0; i < DEFOLD_IMGUI_MAX_DRAW_CALLBACKS; ++i)
+    {
+        g_DrawCallbacks[i].m_Callback = 0;
+        g_DrawCallbacks[i].m_UserData = 0;
+    }
+}
 
 
 static void imgui_ClearGLError()
@@ -3562,6 +3640,9 @@ static int imgui_GetFontSize(lua_State* L)
 static dmExtension::Result imgui_Draw(dmExtension::Params* params)
 {
     imgui_NewFrame();
+
+    imgui_InvokeDrawCallbacks();
+
     ImGui::Render();
 
     if (g_RenderingEnabled)
@@ -3797,6 +3878,8 @@ static void imgui_ExtensionInit()
 
 static void imgui_ExtensionShutdown()
 {
+    imgui_ClearDrawCallbacks();
+
     if (g_imgui_TextBuffer)
     {
         free(g_imgui_TextBuffer);
@@ -5935,6 +6018,15 @@ static void OnEventDefoldImGui(dmExtension::Params* params, const dmExtension::E
 }
 
 #else
+
+extern "C" DM_DLLEXPORT bool DefoldImGui_RegisterDrawCallback(DefoldImGuiDrawCallback callback, void* user_data)
+{
+    return false;
+}
+
+extern "C" DM_DLLEXPORT void DefoldImGui_UnregisterDrawCallback(DefoldImGuiDrawCallback callback, void* user_data)
+{
+}
 
 static dmExtension::Result AppInitializeDefoldImGui(dmExtension::AppParams* params)
 {

@@ -23,9 +23,12 @@ return function(self)
 	end
 
 	-- new way of creating combo boxes with a begin and end function
-	if imgui.begin_combo("Jedi##selectable", "Select a Jedi") then
+	local combo_text = self.selected_jedi and JEDI[self.selected_jedi] or "Select a Jedi"
+	if imgui.begin_combo("Jedi##selectable", combo_text) then
 		for i=1,#JEDI do
-			if imgui.selectable(JEDI[i], i == (self.selected_jedi or 1)) then
+			local currently_selected = i == (self.selected_jedi or 1)
+			local _, pushed = imgui.selectable(JEDI[i], currently_selected)
+			if pushed then
 				self.selected_jedi = i
 			end
 		end

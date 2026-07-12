@@ -6,12 +6,7 @@ This project adds support for [Dear ImGUI](https://github.com/ocornut/imgui) in 
 
 
 ## Why no auto-generated bindings?
-Projects such as [cimgui](https://github.com/cimgui/cimgui) offers Dear ImGUI bindings for a number of different languages, including Lua. It could be used  to generate the bindings for this extension, BUT I'm doing this as a way to learn more about the Dear ImGUI API and as such it makes more sense for me to write the bindings by hand.
-
-
-## IMPORTANT
-* The project currently only has bindings for a small subset of the Dear ImGUI API.
-  * More bindings are added as I need them. Pull requests are accepted!
+Projects such as [cimgui](https://github.com/cimgui/cimgui) offers Dear ImGUI bindings for a number of different languages, including Lua. It could be used  to generate the bindings for this extension, but this extension was initially created as a way to learn more about the Dear ImGUI API and as such it made more sense to write the bindings by hand.
 
 
 ## Platforms support

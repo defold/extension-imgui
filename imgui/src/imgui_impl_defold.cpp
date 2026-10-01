@@ -338,7 +338,11 @@ namespace
             height = 0;
 
         dmGraphics::AdapterFamily family = dmGraphics::GetInstalledAdapterFamily();
-        if (family == dmGraphics::ADAPTER_FAMILY_OPENGL || family == dmGraphics::ADAPTER_FAMILY_OPENGLES)
+        // Defold's Metal backbuffer path flips scissor Y internally, so it needs
+        // the same bottom-left coordinates as OpenGL here.
+        if (family == dmGraphics::ADAPTER_FAMILY_OPENGL ||
+            family == dmGraphics::ADAPTER_FAMILY_OPENGLES ||
+            family == dmGraphics::ADAPTER_FAMILY_METAL)
             y = fb_height - (y + height);
 
         dmGraphics::SetScissor(context, x, y, width, height);

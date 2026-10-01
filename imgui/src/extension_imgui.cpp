@@ -3724,7 +3724,7 @@ static int imgui_SetIniFilename(lua_State* L)
 // ----- IMGUI INIT/SHUTDOWN --
 // ----------------------------
 
-static void imgui_Init(float width, float height)
+static void imgui_Init(float width, float height, dmResource::HFactory resource_factory)
 {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -3739,7 +3739,7 @@ static void imgui_Init(float width, float height)
         io.KeyMap[i] = 0;
     }
 
-    ImGui_ImplDefold_Init();
+    ImGui_ImplDefold_Init(resource_factory);
 }
 
 static void imgui_Shutdown()
@@ -5849,7 +5849,9 @@ static dmExtension::Result InitializeDefoldImGui(dmExtension::Params* params)
     LuaInit(params->m_L);
     float displayWidth = dmConfigFile::GetFloat(params->m_ConfigFile, "display.width", 960.0f);
     float displayHeight = dmConfigFile::GetFloat(params->m_ConfigFile, "display.height", 540.0f);
-    imgui_Init(displayWidth, displayHeight);
+    HContextRegistry context_registry = ExtensionParamsGetContextRegistry((ExtensionParams*) params);
+    dmResource::HFactory resource_factory = (dmResource::HFactory) ContextRegistryGet(context_registry, RESOURCE_FACTORY_CONTEXT_NAME);
+    imgui_Init(displayWidth, displayHeight, resource_factory);
 
     return dmExtension::RESULT_OK;
 }

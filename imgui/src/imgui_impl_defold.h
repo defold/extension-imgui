@@ -3,8 +3,9 @@
 #include "imgui/imgui.h"
 
 #include <dmsdk/graphics/graphics.h>
+#include <dmsdk/resource/resource.hpp>
 
-bool ImGui_ImplDefold_Init();
+bool ImGui_ImplDefold_Init(dmResource::HFactory resource_factory);
 void ImGui_ImplDefold_Shutdown();
 void ImGui_ImplDefold_NewFrame();
 void ImGui_ImplDefold_RenderDrawData(ImDrawData* draw_data);

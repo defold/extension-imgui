@@ -81,7 +81,14 @@ function on_input(self, action_id, action)
 		elseif action_id == WHEEL_DOWN then
 			imgui.set_mouse_wheel(-action.value)
 		elseif action_id == TEXT then
-			imgui.add_input_character(action.text)
+			-- 文本输入不在此处喂入 ImGui：工程内统一由输入桥
+			-- （scripts/ui/text_input.lua）在喂入前按当前聚焦输入框的白名单剔除
+			-- 非法字符。此处代喂有两点问题：绕过白名单，且 add_input_character
+			-- 只取字符串首字节，多字节 UTF-8 被截断成单字节码点（中文上屏在
+			-- 账号框显示问号、在密码框显示掩码星号，回车提交后才被清掉）。
+			-- 宿主脚本须 acquire_input_focus 并把 on_input 转发给该桥，
+			-- 否则界面的文本输入无人接管。
+
 		elseif action_id == KEY_SHIFT then
 			if action.pressed or action.released then
 				imgui.set_key_modifier_shift(action.pressed == true)

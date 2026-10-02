@@ -330,6 +330,9 @@ Functions and constants for interacting with Dear ImGUI
 ---@field GLYPH_RANGES_CYRILLIC integer
 ---@field GLYPH_RANGES_THAI integer
 ---@field GLYPH_RANGES_VIETNAMESE integer
+--- 本扩展自定义：CHINESEFULL + Korean + Cyrillic + Latin 扩展 A/B 的并集。
+--- CHINESEFULL 单独用会缺谚文 / 西里尔 / Latin 扩展 A，16 语种界面须用这一档。
+---@field GLYPH_RANGES_MULTILINGUAL integer
 ---@
 imgui = {}
 
@@ -672,6 +675,7 @@ imgui = {}
 ---| `imgui.GLYPH_RANGES_CYRILLIC`
 ---| `imgui.GLYPH_RANGES_THAI`
 ---| `imgui.GLYPH_RANGES_VIETNAMESE`
+---| `imgui.GLYPH_RANGES_MULTILINGUAL`
 
 ---
 --- IMAGES
@@ -885,6 +889,30 @@ function imgui.end_window() end
 ---@param height number
 ---@param cond? integer
 function imgui.set_next_window_size(width, height, cond) end
+
+---声明窗口内容尺寸（Begin 前调用）：显式滚动判定基准，0 = 该轴不约束。
+---窗口高 < 内容高 + WindowPadding×2 时自动出现竖向滚动条。
+---@param width number
+---@param height number
+function imgui.set_next_window_content_size(width, height) end
+
+---设置窗口初始滚动量（Begin 前调用；用于打开面板时归零滚动位置）。
+---@param x number
+---@param y number
+function imgui.set_next_window_scroll(x, y) end
+
+---@return number y 当前竖向滚动量
+--- 空白区拖拽滚动：在当前窗口 Begin 之后每帧调用。按住窗口体空白处拖动 = 竖向
+--- 平移滚动（内容未超出窗口时无效果）；标题栏按下去移动窗口、滚动条按下走原生
+--- 拖拽、控件上按下走控件自身交互，均不接管。按下瞬间的命中判定只在按压开始
+--- 生效，拖拽中途越界不中断。仅改造版扩展有此 API。
+function imgui.drag_scroll_window() end
+
+--- @return number 当前竖向滚动量
+function imgui.get_scroll_y() end
+
+---@return number max_y 最大竖向滚动量（0 = 内容未超出窗口）
+function imgui.get_scroll_max_y() end
 
 ---@param x number
 ---@param y number
@@ -1167,7 +1195,7 @@ function imgui.drag_float(label, value, speed, min, max, precision) end
 ---@param value number
 ---@param min number
 ---@param max number
----@param precision? integer
+---@param precision? integer|string 数字 = 值文本小数位数（%.Nf）；字符串 = 直接作为 printf format（传 "" 隐藏值文本）
 ---@return boolean changed
 ---@return number? value
 function imgui.slider_float(label, value, min, max, precision) end
@@ -1395,6 +1423,8 @@ function imgui.set_scroll_here_y(center_y_ratio) end
 ---@return integer? font_id
 function imgui.font_add_ttf_file(filename, size, glyph_ranges) end
 
+--- 注册字体。字号由 font_pixels 决定（写入 ImFont::LegacySize，运行时再乘 font_scale）；
+--- font_size 形参保留只为对齐签名，扩展不读它。
 ---@param data string
 ---@param data_size integer
 ---@param font_size number
@@ -1412,6 +1442,31 @@ function imgui.font_pop() end
 ---@param scale number
 ---@return number old_scale
 function imgui.font_scale(font_id, scale) end
+
+--- 当前引擎的图形后端家族（dmGraphics::GetInstalledAdapterFamily）。
+--- 2=OpenGL 3=OpenGL ES 4=Vulkan 8=Metal；非 2/3 时扩展的 GL 渲染路径不可用，
+--- Lua 侧应跳过 imgui 绘制。
+---@return integer adapter_family
+function imgui.get_adapter_family() end
+
+--- 物理屏幕密度（dpi，进程内查询一次后缓存）。
+--- Android 走 JNI 读 DisplayMetrics.densityDpi；其他平台返回 96（Lua 侧按 1x 处理）。
+--- 供 theme.compute_scale 做高密度屏补偿。
+---@return number dpi
+function imgui.get_screen_density() end
+
+--- 把当前 ImGui 帧画进扩展自建的 GL FBO（render script 里调用），
+--- POST_RENDER 时扩展用内置 CRT 合成程序（扫描线+暗角）上屏。
+--- 仅改造版扩展有此 API，调用前用 `if imgui.render_draw_data then` 检测。
+function imgui.render_draw_data() end
+
+--- 显隐安卓软键盘。经引擎 DefoldActivity 的隐藏输入框路径（隐形 EditText +
+--- DefoldInputWrapper），退格 / 回车 / 文本由此转成引擎标准输入事件。
+--- 仅移动端有效。
+---@param show boolean
+---@param keyboard_type number|nil 0 通用 / 1 数字 / 2 邮箱 / 3 密码（仅在 show 时读取）
+---@return boolean ok
+function imgui.show_soft_keyboard(show, keyboard_type) end
 
 ---@return number font_size
 function imgui.get_font_size() end

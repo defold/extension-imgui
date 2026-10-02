@@ -76,9 +76,7 @@ namespace
         dmGraphics::HIndexBuffer             m_IndexBuffer;
         dmGraphics::HUniformLocation         m_TextureLocation;
         dmGraphics::HUniformLocation         m_ProjMtxLocation;
-        dmGraphics::HTexture                 m_FontTexture;
         dmResource::HFactory                 m_ResourceFactory;
-        uint32_t                             m_FontTextureId;
         uint32_t                             m_NextTextureId;
         dmArray<TextureRef>                  m_Textures;
     };
@@ -428,15 +426,6 @@ namespace
 
     static void DestroyDeviceObjects()
     {
-        if (g_Renderer.m_FontTexture)
-        {
-            ImGui_ImplDefold_DestroyTexture(g_Renderer.m_FontTexture);
-            ImGui_ImplDefold_UnregisterTexture(g_Renderer.m_FontTextureId);
-            ImGui::GetIO().Fonts->SetTexID(0);
-            g_Renderer.m_FontTexture = 0;
-            g_Renderer.m_FontTextureId = 0;
-        }
-
         if (g_Renderer.m_IndexBuffer)
             dmGraphics::DeleteIndexBuffer(g_Renderer.m_IndexBuffer);
         if (g_Renderer.m_VertexBuffer)
@@ -457,23 +446,9 @@ namespace
         g_Renderer.m_ProjMtxLocation = dmGraphics::INVALID_UNIFORM_LOCATION;
     }
 
-    static bool CreateFontsTexture()
-    {
-        ImGuiIO& io = ImGui::GetIO();
-        unsigned char* pixels = 0;
-        int width = 0;
-        int height = 0;
-        io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
 
-        g_Renderer.m_FontTexture = ImGui_ImplDefold_CreateTexture(width, height, pixels);
-        if (!g_Renderer.m_FontTexture)
-            return false;
 
-        g_Renderer.m_FontTextureId = ImGui_ImplDefold_RegisterTexture(g_Renderer.m_FontTexture);
-        io.Fonts->SetTexID((ImTextureID)(intptr_t) g_Renderer.m_FontTextureId);
-        return true;
-    }
-}
+} // namespace
 
 bool ImGui_ImplDefold_Init(dmResource::HFactory resource_factory)
 {
@@ -490,8 +465,10 @@ bool ImGui_ImplDefold_Init(dmResource::HFactory resource_factory)
     g_Renderer.m_IndexBuffer = 0;
     g_Renderer.m_TextureLocation = dmGraphics::INVALID_UNIFORM_LOCATION;
     g_Renderer.m_ProjMtxLocation = dmGraphics::INVALID_UNIFORM_LOCATION;
-    g_Renderer.m_FontTexture = 0;
-    g_Renderer.m_FontTextureId = 0;
+
+    // 1.92 动态字体图集：后端按 ImGuiPlatformIO::Textures[] 的请求创建/更新/销毁纹理，
+    // 字形在运行期按需烘焙 —— 聊天等任意字符输入不再受预烘焙字形范围限制。
+    io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures;
 
     io.BackendRendererUserData = &g_Renderer;
     io.BackendRendererName = "imgui_impl_defold";
@@ -499,14 +476,31 @@ bool ImGui_ImplDefold_Init(dmResource::HFactory resource_factory)
     return g_Renderer.m_Context != 0 && g_Renderer.m_ResourceFactory != 0;
 }
 
+
 void ImGui_ImplDefold_Shutdown()
 {
     DestroyDeviceObjects();
+
+    // 销毁仍被引用的动态纹理 GPU 侧资源（镜像官方 GL 后端）
+    for (ImTextureData* tex : ImGui::GetPlatformIO().Textures)
+    {
+        if (tex->RefCount == 1)
+        {
+            uint32_t id = (uint32_t)(intptr_t) tex->TexID;
+            dmGraphics::HTexture texture = ImGui_ImplDefold_GetTexture(id);
+            if (texture)
+            {
+                ImGui_ImplDefold_DestroyTexture(texture);
+                ImGui_ImplDefold_UnregisterTexture(id);
+            }
+            tex->SetTexID(0);
+        }
+    }
     g_Renderer.m_Textures.SetSize(0);
     g_Renderer.m_Textures.SetCapacity(0);
 
     ImGuiIO& io = ImGui::GetIO();
-    io.BackendFlags &= ~ImGuiBackendFlags_RendererHasVtxOffset;
+    io.BackendFlags &= ~(ImGuiBackendFlags_RendererHasVtxOffset | ImGuiBackendFlags_RendererHasTextures);
     io.BackendRendererName = 0;
     io.BackendRendererUserData = 0;
 }
@@ -514,8 +508,6 @@ void ImGui_ImplDefold_Shutdown()
 void ImGui_ImplDefold_NewFrame()
 {
     CreateDeviceObjects();
-    if (!g_Renderer.m_FontTexture)
-        CreateFontsTexture();
 }
 
 dmGraphics::HTexture ImGui_ImplDefold_CreateTexture(int width, int height, const void* rgba_pixels)
@@ -592,12 +584,93 @@ dmGraphics::HTexture ImGui_ImplDefold_GetTexture(uint32_t texture_id)
     return 0;
 }
 
+// ---------------------------------------------------------------------------
+// 1.92 动态纹理（动态字体图集）：按 ImGuiPlatformIO::Textures[] 的请求驱动
+// GPU 纹理的创建 / 子矩形更新 / 销毁。字形在运行期按需烘焙，聊天等任意
+// 字符输入不受预烘焙字形范围限制。
+// ---------------------------------------------------------------------------
+static void ImGui_ImplDefold_DestroyDynamicTexture(ImTextureData* tex)
+{
+    uint32_t id = (uint32_t)(intptr_t) tex->TexID;
+    dmGraphics::HTexture texture = ImGui_ImplDefold_GetTexture(id);
+    if (texture)
+    {
+        ImGui_ImplDefold_DestroyTexture(texture);
+        ImGui_ImplDefold_UnregisterTexture(id);
+    }
+    tex->SetTexID(0);
+    tex->SetStatus(ImTextureStatus_Destroyed);
+}
+
+static void ImGui_ImplDefold_UpdateTexture(ImTextureData* tex)
+{
+    IM_ASSERT(tex->Format == ImTextureFormat_RGBA32 && "dmGraphics 后端仅支持 RGBA32 图集格式");
+    if (tex->Status == ImTextureStatus_WantCreate)
+    {
+        IM_ASSERT(tex->TexID == ImTextureID_Invalid);
+        dmGraphics::HTexture texture = ImGui_ImplDefold_CreateTexture(tex->Width, tex->Height, tex->GetPixels());
+        if (!texture)
+            return;
+        uint32_t id = ImGui_ImplDefold_RegisterTexture(texture);
+        tex->SetTexID((ImTextureID)(intptr_t) id);
+        tex->SetStatus(ImTextureStatus_OK);
+    }
+    else if (tex->Status == ImTextureStatus_WantUpdates)
+    {
+        // 图集脏矩形更新：整图重传。Defold dmGraphics 的子矩形上传不提供源数据
+        // 行距参数（Vulkan stage 路径 bufferRowLength=0，按子区域宽度紧密读取），
+        // 而图集缓冲行距是整图宽度——脏矩形宽度小于图集宽度时行数据会横向错位，
+        // 运行期新烘焙的字形全部渲染成乱字形（实测）。官方 GL 后端同样整图重传。
+        uint32_t id = (uint32_t)(intptr_t) tex->TexID;
+        dmGraphics::HTexture texture = ImGui_ImplDefold_GetTexture(id);
+        if (!texture)
+            return;
+        dmGraphics::HContext context = dmGraphics::GetInstalledContext();
+        dmGraphics::TextureParams params;
+        params.m_Data = tex->GetPixels();
+        params.m_DataSize = tex->Width * tex->Height * tex->BytesPerPixel;
+        params.m_Format = dmGraphics::TEXTURE_FORMAT_RGBA;
+        params.m_MinFilter = dmGraphics::TEXTURE_FILTER_LINEAR;
+        params.m_MagFilter = dmGraphics::TEXTURE_FILTER_LINEAR;
+        params.m_UWrap = dmGraphics::TEXTURE_WRAP_CLAMP_TO_EDGE;
+        params.m_VWrap = dmGraphics::TEXTURE_WRAP_CLAMP_TO_EDGE;
+        params.m_X = 0;
+        params.m_Y = 0;
+        params.m_Width = (uint16_t) tex->Width;
+        params.m_Height = (uint16_t) tex->Height;
+        params.m_Depth = 1;
+        params.m_LayerCount = 1;
+        params.m_MipMap = 0;
+        params.m_SubUpdate = true;
+        dmGraphics::SetTexture(context, texture, params);
+        tex->SetStatus(ImTextureStatus_OK);
+    }
+    else if (tex->Status == ImTextureStatus_WantDestroy && tex->UnusedFrames > 0)
+    {
+        ImGui_ImplDefold_DestroyDynamicTexture(tex);
+    }
+}
+
+static void ImGui_ImplDefold_UpdateTextures(ImDrawData* draw_data)
+{
+    // 追平纹理请求。多数帧列表为空或全部 OK（无事可做）。
+    // （属于 ImDrawData 而非直接取 PlatformIO，是为了允许调用方覆写/禁用纹理更新。）
+    if (draw_data->Textures != nullptr)
+        for (ImTextureData* tex : *draw_data->Textures)
+            if (tex->Status != ImTextureStatus_OK)
+                ImGui_ImplDefold_UpdateTexture(tex);
+}
+
+
 void ImGui_ImplDefold_RenderDrawData(ImDrawData* draw_data)
 {
     int fb_width = (int)(draw_data->DisplaySize.x * draw_data->FramebufferScale.x);
     int fb_height = (int)(draw_data->DisplaySize.y * draw_data->FramebufferScale.y);
     if (fb_width <= 0 || fb_height <= 0 || !CreateDeviceObjects())
         return;
+
+    // 追平本帧的纹理创建 / 更新 / 销毁请求（必须在绘制前完成）
+    ImGui_ImplDefold_UpdateTextures(draw_data);
 
     dmGraphics::HContext context = g_Renderer.m_Context;
     dmGraphics::PipelineState previous_state = dmGraphics::GetPipelineState(context);

@@ -8,10 +8,14 @@
 
 #include "imgui/imgui.h"
 #include "imgui/imconfig.h"
+// drag_scroll_window 需要 ImGuiWindow / GetCurrentWindowRead / ImGuiAxis_Y /
+// GetWindowScrollbarRect，这些属 imgui 内部接口，官方扩展默认不包含该头。
+#include "imgui/imgui_internal.h"
 
 // imgui renderer backend and possible platform extras
 #if defined(DM_PLATFORM_ANDROID)
 #include "imgui/imgui_impl_android.h"
+#include <dmsdk/dlib/android.h>   // dmAndroid::ThreadAttacher：软键盘与屏幕密度查询
 #endif
 #include "imgui_impl_defold.h"
 
@@ -54,12 +58,15 @@ enum ExtImGuiGlyphRanges {
     ExtImGuiGlyphRanges_ChineseSimplifiedCommon,
     ExtImGuiGlyphRanges_Cyrillic,
     ExtImGuiGlyphRanges_Thai,
-    ExtImGuiGlyphRanges_Vietnamese
+    ExtImGuiGlyphRanges_Vietnamese,
+    ExtImGuiGlyphRanges_Multilingual   // 追加在末尾，既有取值保持不变
 };
 
 static bool g_imgui_NewFrame        = false;
 static char* g_imgui_TextBuffer     = 0;
 static dmArray<ImFont*> g_imgui_Fonts;
+// 前置声明：text_getsize（1600 行附近）要用它做边界检查，而其定义在 3400 行之后。
+static ImFont* imgui_GetFont(int index);
 static dmArray<ImgObject> g_imgui_Images;
 static bool g_RenderingEnabled      = true;
 
@@ -1572,7 +1579,22 @@ static int imgui_TextGetSize(lua_State* L)
     {
         fontid = luaL_checkinteger(L, 3);
     }
-    ImFont *font = g_imgui_Fonts[fontid];
+    // fontid 越界时不能直接 g_imgui_Fonts[fontid]：dmArray 的下标断言会把整个 App
+    // 打断（表现为启动后随机 abort，栈里只有 dmArray<ImFont*>::operator[]）。
+    // 故改走带边界检查的 imgui_GetFont，越界则回退 0 号字体并告警。
+    ImFont *font = imgui_GetFont(fontid);
+    if (font == 0)
+    {
+        dmLogWarning("imgui: text_getsize fontid %d out of range (registered=%d), fallback to 0",
+                     fontid, (int)g_imgui_Fonts.Size());
+        font = imgui_GetFont(0);
+    }
+    if (font == 0)
+    {
+        lua_pushnumber(L, 0.0f);
+        lua_pushnumber(L, 0.0f);
+        return 2;
+    }
     ImVec2 sz = font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, text);
 
     lua_pushnumber(L, sz.x);
@@ -2212,11 +2234,18 @@ static int imgui_ButtonImage(lua_State* L)
     {
         int width = luaL_checkinteger(L, 2);
         int height = luaL_checkinteger(L, 3);
-        pushed = ImGui::ImageButton((void*)(intptr_t)tid, ImVec2(width, height));
+        // 以纹理 ID 作隐式控件 ID 的旧 ImageButton 重载已被移除（imgui 1.92 起
+        // 该重载在 imgui_widgets.cpp 中整段注释），新重载要求显式 str_id。
+        // 为保持旧语义（同一纹理的多个按钮各自独立 ID），照旧实现的做法先 PushID。
+        ImGui::PushID((ImTextureID)(intptr_t)tid);
+        pushed = ImGui::ImageButton("", (ImTextureID)(intptr_t)tid, ImVec2(width, height));
+        ImGui::PopID();
     }
     else
     {
-        pushed = ImGui::ImageButton((void*)(intptr_t)tid, ImVec2(0,0));
+        ImGui::PushID((ImTextureID)(intptr_t)tid);
+        pushed = ImGui::ImageButton("", (ImTextureID)(intptr_t)tid, ImVec2(0,0));
+        ImGui::PopID();
     }
     lua_pushboolean(L, pushed);
     return 1;
@@ -2234,7 +2263,7 @@ static int imgui_ButtonArrow(lua_State* L)
     imgui_NewFrame();
     const char* label = luaL_checkstring(L, 1);
     uint32_t direction = luaL_checkint(L, 2);
-    bool pushed = ImGui::ArrowButton(label, direction);
+    bool pushed = ImGui::ArrowButton(label, (ImGuiDir)direction);
     lua_pushboolean(L, pushed);
     return 1;
 }
@@ -2864,7 +2893,8 @@ static int imgui_GetStyle(lua_State* L)
     lua_rawset(L, -3);
 
     lua_pushliteral(L, "TabMinWidthForCloseButton");        // float
-    lua_pushnumber(L, style.TabMinWidthForCloseButton);
+    // 1.92 起该字段改名为 TabCloseButtonMinWidthUnselected（语义同旧值：未选中标签的关闭按钮最小宽度）
+    lua_pushnumber(L, style.TabCloseButtonMinWidthUnselected);
     lua_rawset(L, -3);
 
     lua_pushliteral(L, "ColorButtonPosition");      // ImGuiDir
@@ -2977,7 +3007,7 @@ static int imgui_SetStyle(lua_State* L)
         }
         else if (strcmp(attr, "WindowMenuButtonPosition") == 0)
         {
-            style.WindowMenuButtonPosition = luaL_checkinteger(L, -1);
+            style.WindowMenuButtonPosition = (ImGuiDir)luaL_checkinteger(L, -1);
         }
         else if (strcmp(attr, "ChildRounding") == 0)
         {
@@ -3071,11 +3101,11 @@ static int imgui_SetStyle(lua_State* L)
         }
         else if (strcmp(attr, "TabMinWidthForCloseButton") == 0)
         {
-            style.TabMinWidthForCloseButton = luaL_checknumber(L, -1);
+            style.TabCloseButtonMinWidthUnselected = luaL_checknumber(L, -1);
         }
         else if (strcmp(attr, "ColorButtonPosition") == 0)
         {
-            style.ColorButtonPosition = luaL_checkinteger(L, -1);
+            style.ColorButtonPosition = (ImGuiDir)luaL_checkinteger(L, -1);
         }
         else if (strcmp(attr, "ButtonTextAlign") == 0)
         {
@@ -3423,6 +3453,640 @@ static ImFont* imgui_GetFont(int index)
     return 0;
 }
 
+// 本工程界面支持 16 个语种，imgui 内置的各张范围表单独用都不够：CHINESEFULL 不含谚文 /
+// 西里尔 / Latin 扩展 A，Korean 不含汉字，且字体注册只接受单个范围枚举、无法在 Lua 侧叠加。
+//
+// 范围构成（按码位升序）：
+//   1) 基础段 —— Basic Latin + Latin 扩展 A/B、希腊、西里尔、通用标点、货币符号、
+//      CJK 符号与假名、谚文、假名 phonetic 扩展、全角。覆盖数字/标点/用户输入等动态文本。
+//   2) assets/i18n 下 16 个语言 JSON 里**实际出现过的全部字符**（并集 933 字，
+//      含简体/繁体汉字、假名、谚文、西里尔等）。
+//
+// 为什么不用「CJK 统一表意全表」：那是 2 万余码位，客户端每个字号都注册一份（5 份），
+// 图集在 1.92 的 rectpack 阶段直接装不下（FontBakedLoadGlyph 断言 pack_id != -1）。
+// 按实际用字生成范围后总量约 2300 码位，16 个语言显示效果不变，图集小一个量级。
+// 重新生成方式：扫描 assets/i18n/*.json 求字符并集，与基础段合并后按升序输出区间。
+static const ImWchar* GetGlyphRangesMultilingual()
+{
+    static const ImWchar ranges[] =
+    {
+        0x0020, 0x024F,
+        0x0370, 0x04FF,
+        0x2010, 0x206F,
+        0x20A0, 0x20BF,
+        0x3000, 0x30FF,
+        0x3131, 0x3163,
+        0x31F0, 0x31FF,
+        0x4E00, 0x4E00,
+        0x4E0A, 0x4E0B,
+        0x4E0D, 0x4E0E,
+        0x4E24, 0x4E24,
+        0x4E26, 0x4E26,
+        0x4E2D, 0x4E2D,
+        0x4E3A, 0x4E3B,
+        0x4E50, 0x4E50,
+        0x4E86, 0x4E86,
+        0x4E88, 0x4E88,
+        0x4EA4, 0x4EA4,
+        0x4EC5, 0x4EC5,
+        0x4ECA, 0x4ECB,
+        0x4ED8, 0x4ED8,
+        0x4EE4, 0x4EE5,
+        0x4F3A, 0x4F3A,
+        0x4F4D, 0x4F4D,
+        0x4F53, 0x4F54,
+        0x4F5C, 0x4F5C,
+        0x4F7F, 0x4F7F,
+        0x4F9B, 0x4F9B,
+        0x4FE1, 0x4FE1,
+        0x50C5, 0x50C5,
+        0x50CF, 0x50CF,
+        0x5143, 0x5143,
+        0x5148, 0x5149,
+        0x5165, 0x5165,
+        0x5167, 0x5167,
+        0x5169, 0x5169,
+        0x516C, 0x516C,
+        0x5173, 0x5173,
+        0x5185, 0x5185,
+        0x518A, 0x518A,
+        0x518C, 0x518D,
+        0x5199, 0x5199,
+        0x51B0, 0x51B0,
+        0x51FA, 0x51FA,
+        0x5206, 0x5207,
+        0x5219, 0x5219,
+        0x5229, 0x5229,
+        0x5236, 0x5236,
+        0x523B, 0x523B,
+        0x5247, 0x5247,
+        0x524D, 0x524D,
+        0x529B, 0x529B,
+        0x529F, 0x529F,
+        0x52A1, 0x52A1,
+        0x52A8, 0x52A8,
+        0x52B9, 0x52B9,
+        0x52D5, 0x52D5,
+        0x52FE, 0x52FE,
+        0x5305, 0x5305,
+        0x534A, 0x534A,
+        0x534F, 0x534F,
+        0x5354, 0x5354,
+        0x5360, 0x5360,
+        0x5373, 0x5373,
+        0x53CD, 0x53CD,
+        0x53D1, 0x53D1,
+        0x53D6, 0x53D6,
+        0x53EF, 0x53EF,
+        0x53F7, 0x53F7,
+        0x5408, 0x5408,
+        0x540C, 0x540C,
+        0x540E, 0x540E,
+        0x5417, 0x5417,
+        0x542B, 0x542B,
+        0x544A, 0x544A,
+        0x5468, 0x5468,
+        0x548C, 0x548C,
+        0x5546, 0x5546,
+        0x554F, 0x554F,
+        0x55CE, 0x55CE,
+        0x5668, 0x5668,
+        0x566A, 0x566A,
+        0x56DE, 0x56DE,
+        0x5728, 0x5728,
+        0x586B, 0x586B,
+        0x590D, 0x590D,
+        0x5927, 0x5927,
+        0x592A, 0x592A,
+        0x5931, 0x5931,
+        0x59CB, 0x59CB,
+        0x5B57, 0x5B58,
+        0x5B8C, 0x5B8C,
+        0x5B9A, 0x5B9A,
+        0x5B9E, 0x5B9E,
+        0x5BA2, 0x5BA2,
+        0x5BB9, 0x5BB9,
+        0x5BC6, 0x5BC6,
+        0x5BE6, 0x5BE6,
+        0x5BEB, 0x5BEB,
+        0x5C06, 0x5C07,
+        0x5C0F, 0x5C0F,
+        0x5C11, 0x5C11,
+        0x5C14, 0x5C14,
+        0x5C1A, 0x5C1A,
+        0x5C4F, 0x5C4F,
+        0x5DF2, 0x5DF2,
+        0x5E27, 0x5E27,
+        0x5E33, 0x5E33,
+        0x5E38, 0x5E38,
+        0x5E40, 0x5E40,
+        0x5E55, 0x5E55,
+        0x5E76, 0x5E76,
+        0x5EA6, 0x5EA6,
+        0x5F00, 0x5F00,
+        0x5F02, 0x5F03,
+        0x5F0F, 0x5F0F,
+        0x5F15, 0x5F15,
+        0x5F31, 0x5F31,
+        0x5F37, 0x5F37,
+        0x5F3A, 0x5F3A,
+        0x5F53, 0x5F53,
+        0x5F55, 0x5F55,
+        0x5F62, 0x5F62,
+        0x5F85, 0x5F85,
+        0x5F8C, 0x5F8C,
+        0x5F97, 0x5F97,
+        0x5FA9, 0x5FA9,
+        0x5FAE, 0x5FAE,
+        0x5FC5, 0x5FC5,
+        0x5FD8, 0x5FD8,
+        0x6001, 0x6001,
+        0x6062, 0x6062,
+        0x610F, 0x610F,
+        0x614B, 0x614B,
+        0x620F, 0x6211,
+        0x6216, 0x6216,
+        0x6232, 0x6232,
+        0x6236, 0x6237,
+        0x623B, 0x623B,
+        0x626B, 0x626B,
+        0x629E, 0x629E,
+        0x62E9, 0x62E9,
+        0x6301, 0x6301,
+        0x6307, 0x6307,
+        0x636E, 0x636E,
+        0x6383, 0x6383,
+        0x63A5, 0x63A5,
+        0x63CF, 0x63D0,
+        0x63F4, 0x63F4,
+        0x64C7, 0x64C7,
+        0x64CD, 0x64CE,
+        0x652F, 0x652F,
+        0x6536, 0x6536,
+        0x653E, 0x653E,
+        0x6548, 0x6548,
+        0x6557, 0x6557,
+        0x656C, 0x656C,
+        0x6570, 0x6570,
+        0x6578, 0x6578,
+        0x6587, 0x6587,
+        0x6599, 0x6599,
+        0x65AD, 0x65AD,
+        0x65B0, 0x65B0,
+        0x65B7, 0x65B7,
+        0x65E0, 0x65E0,
+        0x65E2, 0x65E2,
+        0x65E5, 0x65E5,
+        0x65F6, 0x65F6,
+        0x660E, 0x660E,
+        0x663E, 0x663E,
+        0x6642, 0x6642,
+        0x6697, 0x6697,
+        0x66A2, 0x66A2,
+        0x66F2, 0x66F2,
+        0x6709, 0x6709,
+        0x670D, 0x670D,
+        0x671F, 0x671F,
+        0x672A, 0x672A,
+        0x672C, 0x672C,
+        0x6756, 0x6756,
+        0x6790, 0x6790,
+        0x679C, 0x679C,
+        0x67D3, 0x67D3,
+        0x67E5, 0x67E5,
+        0x67FB, 0x67FB,
+        0x6837, 0x6838,
+        0x683C, 0x683C,
+        0x68C4, 0x68C4,
+        0x697D, 0x697D,
+        0x6A02, 0x6A02,
+        0x6A19, 0x6A19,
+        0x6A23, 0x6A23,
+        0x6B0A, 0x6B0A,
+        0x6B21, 0x6B21,
+        0x6B62, 0x6B65,
+        0x6BCD, 0x6BCD,
+        0x6BEB, 0x6BEB,
+        0x6CD5, 0x6CD5,
+        0x6CE8, 0x6CE8,
+        0x6D41, 0x6D41,
+        0x6D4B, 0x6D4B,
+        0x6D53, 0x6D53,
+        0x6D88, 0x6D88,
+        0x6E08, 0x6E08,
+        0x6E1B, 0x6E1B,
+        0x6E2C, 0x6E2C,
+        0x6E32, 0x6E32,
+        0x6E38, 0x6E38,
+        0x6E80, 0x6E80,
+        0x6E96, 0x6E96,
+        0x6EE1, 0x6EE1,
+        0x6EFF, 0x6EFF,
+        0x6FC3, 0x6FC3,
+        0x70B9, 0x70BA,
+        0x7121, 0x7121,
+        0x723E, 0x723E,
+        0x7248, 0x7248,
+        0x724C, 0x724C,
+        0x7279, 0x7279,
+        0x72B6, 0x72B6,
+        0x72C0, 0x72C0,
+        0x7372, 0x7372,
+        0x7387, 0x7387,
+        0x73C0, 0x73C0,
+        0x73FE, 0x73FE,
+        0x7425, 0x7425,
+        0x751F, 0x751F,
+        0x7528, 0x7528,
+        0x7535, 0x7535,
+        0x753B, 0x753B,
+        0x7545, 0x7545,
+        0x754C, 0x754C,
+        0x756B, 0x756B,
+        0x7570, 0x7570,
+        0x7576, 0x7576,
+        0x767A, 0x767D,
+        0x7684, 0x7684,
+        0x76EE, 0x76EE,
+        0x7701, 0x7701,
+        0x77E5, 0x77E5,
+        0x7801, 0x7801,
+        0x786E, 0x786E,
+        0x78BA, 0x78BA,
+        0x78BC, 0x78BC,
+        0x793A, 0x793A,
+        0x79C1, 0x79C1,
+        0x79D2, 0x79D2,
+        0x7A0B, 0x7A0B,
+        0x7A0D, 0x7A0D,
+        0x7A2E, 0x7A2E,
+        0x7A7A, 0x7A7A,
+        0x7ACB, 0x7ACB,
+        0x7B26, 0x7B26,
+        0x7B2C, 0x7B2C,
+        0x7B49, 0x7B49,
+        0x7BB1, 0x7BB1,
+        0x7CFB, 0x7CFB,
+        0x7D04, 0x7D05,
+        0x7D50, 0x7D50,
+        0x7D9A, 0x7D9A,
+        0x7DA0, 0x7DA0,
+        0x7DAD, 0x7DAD,
+        0x7DB2, 0x7DB2,
+        0x7DCB, 0x7DCB,
+        0x7DD1, 0x7DD1,
+        0x7DDA, 0x7DDA,
+        0x7E41, 0x7E41,
+        0x7E6B, 0x7E6B,
+        0x7EA2, 0x7EA2,
+        0x7EBF, 0x7EBF,
+        0x7ED3, 0x7ED3,
+        0x7EDC, 0x7EDC,
+        0x7EF4, 0x7EF4,
+        0x7EFF, 0x7EFF,
+        0x7F51, 0x7F51,
+        0x7F57, 0x7F57,
+        0x7F6E, 0x7F6E,
+        0x7F85, 0x7F85,
+        0x8005, 0x8005,
+        0x8054, 0x8054,
+        0x805E, 0x805E,
+        0x806F, 0x806F,
+        0x80FD, 0x80FD,
+        0x81EA, 0x81EA,
+        0x81F3, 0x81F4,
+        0x8207, 0x8207,
+        0x8272, 0x8272,
+        0x82F1, 0x82F1,
+        0x83B7, 0x83B7,
+        0x8424, 0x8424,
+        0x84DD, 0x84DD,
+        0x85CD, 0x85CD,
+        0x85CF, 0x85CF,
+        0x865F, 0x865F,
+        0x86CD, 0x86CD,
+        0x87A2, 0x87A2,
+        0x884C, 0x884C,
+        0x8868, 0x8868,
+        0x88AB, 0x88AB,
+        0x8981, 0x8981,
+        0x898B, 0x898B,
+        0x898F, 0x898F,
+        0x89C4, 0x89C4,
+        0x89D2, 0x89D2,
+        0x89E3, 0x89E3,
+        0x8A00, 0x8A00,
+        0x8A08, 0x8A08,
+        0x8A18, 0x8A18,
+        0x8A2D, 0x8A2D,
+        0x8A3B, 0x8A3C,
+        0x8A66, 0x8A66,
+        0x8A72, 0x8A72,
+        0x8A8D, 0x8A8D,
+        0x8A9E, 0x8A9E,
+        0x8AA4, 0x8AA4,
+        0x8AAD, 0x8AAD,
+        0x8ACB, 0x8ACB,
+        0x8B49, 0x8B49,
+        0x8B70, 0x8B70,
+        0x8B80, 0x8B80,
+        0x8BA4, 0x8BA4,
+        0x8BAE, 0x8BAE,
+        0x8BB0, 0x8BB0,
+        0x8BBE, 0x8BBE,
+        0x8BC1, 0x8BC1,
+        0x8BD5, 0x8BD5,
+        0x8BE5, 0x8BE5,
+        0x8BED, 0x8BED,
+        0x8BEF, 0x8BEF,
+        0x8BF7, 0x8BF7,
+        0x8BFB, 0x8BFB,
+        0x8CC7, 0x8CC7,
+        0x8CEC, 0x8CEC,
+        0x8D25, 0x8D26,
+        0x8D64, 0x8D64,
+        0x8D70, 0x8D70,
+        0x8DB3, 0x8DB3,
+        0x8DEF, 0x8DEF,
+        0x8EFD, 0x8EFD,
+        0x8F15, 0x8F15,
+        0x8F38, 0x8F38,
+        0x8F7B, 0x8F7B,
+        0x8F93, 0x8F93,
+        0x8FA8, 0x8FA8,
+        0x8FBA, 0x8FBA,
+        0x8FC7, 0x8FC7,
+        0x8FD4, 0x8FD4,
+        0x8FDE, 0x8FDE,
+        0x9000, 0x9001,
+        0x9009, 0x9009,
+        0x901A, 0x901A,
+        0x901F, 0x901F,
+        0x9023, 0x9023,
+        0x904A, 0x904A,
+        0x904E, 0x904E,
+        0x9055, 0x9055,
+        0x9078, 0x9078,
+        0x90AE, 0x90AE,
+        0x91CD, 0x91CD,
+        0x91CF, 0x91CF,
+        0x932F, 0x932F,
+        0x9332, 0x9332,
+        0x9519, 0x9519,
+        0x9577, 0x9577,
+        0x957F, 0x957F,
+        0x9589, 0x9589,
+        0x958B, 0x958B,
+        0x9593, 0x9593,
+        0x95B1, 0x95B1,
+        0x95DC, 0x95DC,
+        0x95ED, 0x95ED,
+        0x95F4, 0x95F4,
+        0x95FB, 0x95FB,
+        0x9605, 0x9605,
+        0x9650, 0x9650,
+        0x9690, 0x9690,
+        0x96B1, 0x96B1,
+        0x96FB, 0x96FB,
+        0x9700, 0x9700,
+        0x975E, 0x975E,
+        0x9762, 0x9762,
+        0x97F3, 0x97F3,
+        0x9805, 0x9805,
+        0x9810, 0x9810,
+        0x983B, 0x983B,
+        0x985E, 0x985E,
+        0x986F, 0x986F,
+        0x9879, 0x9879,
+        0x9891, 0x9891,
+        0x994B, 0x994B,
+        0x9988, 0x9988,
+        0x9A57, 0x9A57,
+        0x9A8C, 0x9A8C,
+        0x9AD4, 0x9AD4,
+        0x9AD8, 0x9AD8,
+        0x9ED8, 0x9ED8,
+        0x9EDE, 0x9EDE,
+        0xAC00, 0xAC01,
+        0xAC04, 0xAC04,
+        0xAC11, 0xAC12,
+        0xAC15, 0xAC15,
+        0xAC1C, 0xAC1D,
+        0xAC70, 0xAC70,
+        0xAC8C, 0xAC8C,
+        0xACA0, 0xACA0,
+        0xACB0, 0xACB0,
+        0xACC4, 0xACC4,
+        0xACE0, 0xACE1,
+        0xACE7, 0xACE7,
+        0xACF5, 0xACF5,
+        0xACFC, 0xACFC,
+        0xAD00, 0xAD00,
+        0xAD11, 0xAD11,
+        0xAD6C, 0xAD6C,
+        0xADDC, 0xADDC,
+        0xADF8, 0xADF8,
+        0xAE00, 0xAE00,
+        0xAE08, 0xAE08,
+        0xAE30, 0xAE30,
+        0xAE40, 0xAE40,
+        0xAE4C, 0xAE4C,
+        0xB044, 0xB044,
+        0xB04A, 0xB04A,
+        0xB098, 0xB098,
+        0xB0A0, 0xB0A0,
+        0xB108, 0xB108,
+        0xB124, 0xB124,
+        0xB178, 0xB179,
+        0xB274, 0xB274,
+        0xB294, 0xB294,
+        0xB2A5, 0xB2A5,
+        0xB2C8, 0xB2C8,
+        0xB2E4, 0xB2E4,
+        0xB2E8, 0xB2E8,
+        0xB2EB, 0xB2EB,
+        0xB300, 0xB300,
+        0xB354, 0xB354,
+        0xB370, 0xB370,
+        0xB3C4, 0xB3C4,
+        0xB3CC, 0xB3CC,
+        0xB3D9, 0xB3D9,
+        0xB418, 0xB418,
+        0xB41C, 0xB41C,
+        0xB420, 0xB420,
+        0xB428, 0xB429,
+        0xB458, 0xB458,
+        0xB4A4, 0xB4A4,
+        0xB4DC, 0xB4DC,
+        0xB4F1, 0xB4F1,
+        0xB610, 0xB610,
+        0xB77C, 0xB77C,
+        0xB7AB, 0xB7AB,
+        0xB7C9, 0xB7C9,
+        0xB7FD, 0xB7FD,
+        0xB808, 0xB808,
+        0xB80C, 0xB80C,
+        0xB825, 0xB825,
+        0xB838, 0xB838,
+        0xB85C, 0xB85D,
+        0xB8CC, 0xB8CC,
+        0xB8E8, 0xB8E8,
+        0xB958, 0xB958,
+        0xB960, 0xB960,
+        0xB974, 0xB974,
+        0xB97C, 0xB97C,
+        0xB9AC, 0xB9AD,
+        0xB9BC, 0xB9BC,
+        0xB9C1, 0xB9C1,
+        0xB9CC, 0xB9CC,
+        0xBA54, 0xBA54,
+        0xBA74, 0xBA74,
+        0xBABB, 0xBABB,
+        0xBB34, 0xBB34,
+        0xBB38, 0xBB38,
+        0xBBF8, 0xBBF8,
+        0xBC00, 0xBC00,
+        0xBC0F, 0xBC0F,
+        0xBC14, 0xBC15,
+        0xBC18, 0xBC18,
+        0xBC1B, 0xBC1C,
+        0xBC29, 0xBC29,
+        0xBC31, 0xBC31,
+        0xBC84, 0xBC84,
+        0xBC88, 0xBC88,
+        0xBCA0, 0xBCA0,
+        0xBCF4, 0xBCF5,
+        0xBCF8, 0xBCF8,
+        0xBD80, 0xBD80,
+        0xBE14, 0xBE14,
+        0xBE44, 0xBE44,
+        0xC0AC, 0xC0AC,
+        0xC0C1, 0xC0C1,
+        0xC0C8, 0xC0C9,
+        0xC11C, 0xC11C,
+        0xC120, 0xC120,
+        0xC124, 0xC124,
+        0xC131, 0xC131,
+        0xC138, 0xC138,
+        0xC13C, 0xC13C,
+        0xC168, 0xC168,
+        0xC18C, 0xC18D,
+        0xC1A1, 0xC1A1,
+        0xC218, 0xC218,
+        0xC228, 0xC228,
+        0xC22B, 0xC22B,
+        0xC2A4, 0xC2A4,
+        0xC2A8, 0xC2A8,
+        0xC2B5, 0xC2B5,
+        0xC2DC, 0xC2DD,
+        0xC2E4, 0xC2E4,
+        0xC544, 0xC545,
+        0xC548, 0xC548,
+        0xC54A, 0xC54A,
+        0xC54C, 0xC54C,
+        0xC57C, 0xC57D,
+        0xC5B4, 0xC5B4,
+        0xC5B8, 0xC5B8,
+        0xC5C6, 0xC5C6,
+        0xC5C8, 0xC5C8,
+        0xC5D0, 0xC5D0,
+        0xC5D4, 0xC5D4,
+        0xC5F0, 0xC5F0,
+        0xC601, 0xC601,
+        0xC608, 0xC608,
+        0xC624, 0xC624,
+        0xC628, 0xC628,
+        0xC62C, 0xC62C,
+        0xC640, 0xC640,
+        0xC644, 0xC644,
+        0xC694, 0xC694,
+        0xC6A9, 0xC6A9,
+        0xC6C3, 0xC6C3,
+        0xC6CC, 0xC6CC,
+        0xC6D0, 0xC6D0,
+        0xC720, 0xC720,
+        0xC73C, 0xC73C,
+        0xC740, 0xC740,
+        0xC744, 0xC744,
+        0xC74C, 0xC74C,
+        0xC758, 0xC758,
+        0xC774, 0xC774,
+        0xC778, 0xC778,
+        0xC77C, 0xC77D,
+        0xC784, 0xC785,
+        0xC788, 0xC788,
+        0xC78A, 0xC78A,
+        0xC790, 0xC791,
+        0xC798, 0xC798,
+        0xC7A0, 0xC7A0,
+        0xC7A6, 0xC7A6,
+        0xC7AC, 0xC7AC,
+        0xC804, 0xC804,
+        0xC808, 0xC808,
+        0xC811, 0xC811,
+        0xC815, 0xC815,
+        0xC81C, 0xC81C,
+        0xC84C, 0xC84C,
+        0xC871, 0xC871,
+        0xC874, 0xC874,
+        0xC8FC, 0xC8FC,
+        0xC911, 0xC911,
+        0xC988, 0xC988,
+        0xC99D, 0xC99D,
+        0xC9C0, 0xC9C0,
+        0xC9C4, 0xC9C4,
+        0xC9DC, 0xC9DC,
+        0xC9F8, 0xC9F8,
+        0xCC28, 0xCC28,
+        0xCC3E, 0xCC3E,
+        0xCC98, 0xCC98,
+        0xCCAD, 0xCCAD,
+        0xCCB4, 0xCCB4,
+        0xCD08, 0xCD08,
+        0xCD9C, 0xCD9C,
+        0xCDA9, 0xCDA9,
+        0xCDE8, 0xCDE8,
+        0xCE21, 0xCE21,
+        0xCE58, 0xCE59,
+        0xCE68, 0xCE68,
+        0xCE90, 0xCE90,
+        0xCE94, 0xCE94,
+        0xCF54, 0xCF54,
+        0xD06C, 0xD06C,
+        0xD070, 0xD070,
+        0xD0C0, 0xD0C0,
+        0xD0DC, 0xD0DD,
+        0xD130, 0xD130,
+        0xD1A0, 0xD1A0,
+        0xD1B5, 0xD1B5,
+        0xD2B8, 0xD2B8,
+        0xD2C0, 0xD2C0,
+        0xD328, 0xD328,
+        0xD3EC, 0xD3EC,
+        0xD45C, 0xD45C,
+        0xD504, 0xD504,
+        0xD53C, 0xD53C,
+        0xD544, 0xD544,
+        0xD558, 0xD558,
+        0xD55C, 0xD55C,
+        0xD560, 0xD560,
+        0xD568, 0xD569,
+        0xD574, 0xD574,
+        0xD588, 0xD588,
+        0xD604, 0xD604,
+        0xD615, 0xD615,
+        0xD638, 0xD638,
+        0xD648, 0xD648,
+        0xD654, 0xD655,
+        0xD68C, 0xD68C,
+        0xD6A8, 0xD6A8,
+        0xD6C4, 0xD6C4,
+        0xFF00, 0xFFEF,
+        0,
+    };
+    return &ranges[0];
+}
+
 ImWchar* LuaToGlyphRanges(lua_State * L, int index) {
     const ImWchar* glyph_ranges = NULL;
     if (!lua_isnil(L, index)) {
@@ -3452,6 +4116,9 @@ ImWchar* LuaToGlyphRanges(lua_State * L, int index) {
                 break;
             case ExtImGuiGlyphRanges_Vietnamese:
                 glyph_ranges = io.Fonts->GetGlyphRangesVietnamese();
+                break;
+            case ExtImGuiGlyphRanges_Multilingual:
+                glyph_ranges = GetGlyphRangesMultilingual();
                 break;
             default:
             case ExtImGuiGlyphRanges_Default:
@@ -3617,6 +4284,9 @@ static int imgui_GetFontSize(lua_State* L)
 // ----------------------------
 static dmExtension::Result imgui_Draw(dmExtension::Params* params)
 {
+    // 离屏目标在这里按窗口尺寸惰性创建/重建。曾放在 PRE_RENDER：Windows 可用，但
+    // Android（Adreno + Vulkan）会卡死渲染循环（界面全黑、不产帧），故统一收敛到
+    // POST_RENDER —— 与官方直绘屏幕是同一时机，引擎状态最稳妥。
     imgui_NewFrame();
 
     imgui_InvokeDrawCallbacks();
@@ -3813,12 +4483,8 @@ static void imgui_Init(float width, float height, dmResource::HFactory resource_
     ImGuiIO& io = ImGui::GetIO();
     io.DisplaySize = ImVec2(width, height);
 
-    // init keymap list
-    // We will be sending the correct ImGuiKey_ enums from Lua
-    for (int i = 0; i < 512; i++)
-    {
-        io.KeyMap[i] = 0;
-    }
+    // 1.92 起 io.KeyMap[] 随旧键位 API 一并移除（该数组在 imgui.h 中只剩注释），
+    // 键位全部直接使用 ImGuiKey_ 枚举，不再需要初始化「原生键位 → 索引」映射表。
 
     ImGui_ImplDefold_Init(resource_factory);
 }
@@ -3831,6 +4497,278 @@ static void imgui_Shutdown()
     ImGuiIO& io = ImGui::GetIO();
     io.Fonts->Clear();
     ImGui::DestroyContext();
+}
+
+// ----------------------------
+// ----- 项目自有 API（M3）--------
+// ----------------------------
+// 以下接口按本工程需要补充，上游 extension-imgui 无对应实现。
+
+/** QueryScreenDensity
+ * 屏幕物理密度（dpi），进程内查询一次并缓存。
+ * Android 经 JNI 读 DisplayMetrics.densityDpi（反射公开 API，无需改 manifest）；
+ * 其余平台返回 96 —— Lua 侧把低于参考密度的值钳成 1x，故桌面端等同于不做密度补偿。
+ */
+static float imgui_QueryScreenDensity()
+{
+    static float s_density = 0.0f; // 0 = 尚未查询
+    if (s_density > 0.0f)
+    {
+        return s_density;
+    }
+
+    s_density = 96.0f;
+#if defined(DM_PLATFORM_ANDROID)
+    dmAndroid::ThreadAttacher attacher;
+    JNIEnv* env = attacher.GetEnv();
+    ANativeActivity* activity = attacher.GetActivity();
+    if (env && activity && activity->clazz)
+    {
+        jobject activity_obj = activity->clazz;
+        jclass activity_class = env->GetObjectClass(activity_obj);
+        jmethodID get_resources = env->GetMethodID(activity_class, "getResources", "()Landroid/content/res/Resources;");
+        jobject resources = env->CallObjectMethod(activity_obj, get_resources);
+        if (resources && env->ExceptionCheck() == JNI_FALSE)
+        {
+            jclass resources_class = env->GetObjectClass(resources);
+            jmethodID get_metrics = env->GetMethodID(resources_class, "getDisplayMetrics", "()Landroid/util/DisplayMetrics;");
+            jobject metrics = env->CallObjectMethod(resources, get_metrics);
+            if (metrics && env->ExceptionCheck() == JNI_FALSE)
+            {
+                jclass metrics_class = env->GetObjectClass(metrics);
+                jfieldID dpi_field = env->GetFieldID(metrics_class, "densityDpi", "I");
+                int dpi = (int)env->GetIntField(metrics, dpi_field);
+                if (dpi > 0)
+                {
+                    s_density = (float)dpi;
+                }
+            }
+        }
+        if (env->ExceptionCheck() == JNI_TRUE)
+        {
+            env->ExceptionClear();
+        }
+    }
+#endif
+    dmLogInfo("imgui: screen density = %.0f dpi", s_density);
+    return s_density;
+}
+
+/** GetScreenDensity
+ * @name get_screen_density
+ * @treturn number 屏幕密度（dpi）
+ */
+static int imgui_GetScreenDensity(lua_State* L)
+{
+    DM_LUA_STACK_CHECK(L, 1);
+    lua_pushnumber(L, imgui_QueryScreenDensity());
+    return 1;
+}
+
+#if defined(DM_PLATFORM_ANDROID)
+/** ShowSoftKeyboard
+ * @name show_soft_keyboard
+ * 显示/隐藏安卓软键盘（IME）。
+ *
+ * 走引擎自己的 DefoldActivity#showSoftInput，而不是对 decor view 直接调
+ * InputMethodManager：新版 IME（targetSdk >= 28 的 Gboard）只用
+ * InputConnection.deleteSurroundingText 表达退格，而 decor view 没有
+ * InputConnection，退格会被静默丢弃。引擎的隐藏输入框（EditText +
+ * DefoldInputWrapper）能收到 deleteSurroundingText 并重新发出原生退格键事件，
+ * 由输入系统派发成 key_backspace 动作。
+ *
+ * @boolean show true 显示 / false 隐藏
+ * @number [keyboard_type] 0 默认 / 1 数字 / 2 邮箱 / 3 密码（须与
+ *         DefoldActivity.GLFWKeyboardType 一致；仅在 show 时读取）
+ * @treturn boolean 引擎调用是否已发出
+ */
+static int imgui_ShowSoftKeyboard(lua_State* L)
+{
+    DM_LUA_STACK_CHECK(L, 1);
+    int show = lua_toboolean(L, 1);
+    int keyboard_type = 0;
+    if (lua_gettop(L) >= 2 && !lua_isnil(L, 2))
+    {
+        keyboard_type = (int) luaL_checkinteger(L, 2);
+    }
+
+    bool ok = false;
+    dmAndroid::ThreadAttacher attacher;
+    JNIEnv* env = attacher.GetEnv();
+    ANativeActivity* activity = attacher.GetActivity();
+    if (env && activity && activity->clazz)
+    {
+        jobject activity_obj = activity->clazz;
+        jclass activity_class = env->GetObjectClass(activity_obj);
+
+        if (show)
+        {
+            jmethodID set_hidden = env->GetMethodID(activity_class, "setUseHiddenInputField", "(Z)V");
+            if (set_hidden)
+            {
+                env->CallVoidMethod(activity_obj, set_hidden, JNI_TRUE);
+            }
+            jmethodID show_method = env->GetMethodID(activity_class, "showSoftInput", "(I)V");
+            if (show_method)
+            {
+                env->CallVoidMethod(activity_obj, show_method, (jint) keyboard_type);
+                ok = env->ExceptionCheck() == JNI_FALSE;
+            }
+        }
+        else
+        {
+            // 引擎 hideSoftInput 会同时收起 IME 并恢复沉浸模式状态。
+            jmethodID hide_method = env->GetMethodID(activity_class, "hideSoftInput", "()V");
+            if (hide_method)
+            {
+                env->CallVoidMethod(activity_obj, hide_method);
+                ok = env->ExceptionCheck() == JNI_FALSE;
+            }
+        }
+
+        if (env->ExceptionCheck() == JNI_TRUE)
+        {
+            env->ExceptionClear();
+            ok = false;
+        }
+    }
+
+    lua_pushboolean(L, ok ? 1 : 0);
+    return 1;
+}
+#else
+/** ShowSoftKeyboard
+ * @name show_soft_keyboard
+ * 本平台未实现，恒返回 false。
+ * @boolean show 忽略
+ * @number [keyboard_type] 忽略
+ * @treturn boolean false
+ */
+static int imgui_ShowSoftKeyboard(lua_State* L)
+{
+    DM_LUA_STACK_CHECK(L, 1);
+    lua_pushboolean(L, 0);
+    return 1;
+}
+#endif
+
+/** SetNextWindowContentSize
+ * @name set_next_window_content_size
+ * @number width  0 = 不约束宽
+ * @number height 内容区高（滚动判定基准：>0 时窗口高不足则出竖向滚动条）
+ */
+static int imgui_SetNextWindowContentSize(lua_State* L)
+{
+    DM_LUA_STACK_CHECK(L, 0);
+    imgui_NewFrame();
+    float width  = (float)luaL_checknumber(L, 1);
+    float height = (float)luaL_checknumber(L, 2);
+    ImGui::SetNextWindowContentSize(ImVec2(width, height));
+    return 0;
+}
+
+/** GetScrollY
+ * @name get_scroll_y
+ * @treturn number 当前竖向滚动量
+ */
+static int imgui_GetScrollY(lua_State* L)
+{
+    DM_LUA_STACK_CHECK(L, 1);
+    imgui_NewFrame();
+    lua_pushnumber(L, ImGui::GetScrollY());
+    return 1;
+}
+
+/** GetScrollMaxY
+ * @name get_scroll_max_y
+ * @treturn number 最大竖向滚动量（0 = 内容未超出窗口）
+ */
+static int imgui_GetScrollMaxY(lua_State* L)
+{
+    DM_LUA_STACK_CHECK(L, 1);
+    imgui_NewFrame();
+    lua_pushnumber(L, ImGui::GetScrollMaxY());
+    return 1;
+}
+
+/** DragScrollWindow
+ * @name drag_scroll_window
+ * 触摸式拖拽滚动：在窗口空白处按住拖动即竖向滚动，而非移动窗口。
+ * 每帧在 Begin 之后、窗口为 current 时调用一次。标题栏 / 滚动条 /
+ * 任何 item 上的按下都留给原生交互；悬停判定只在按下那一刻做，
+ * 因此指针拖离起始空白处后仍能继续滚动。
+ */
+static int imgui_DragScrollWindow(lua_State* L)
+{
+    DM_LUA_STACK_CHECK(L, 0);
+    imgui_NewFrame();
+
+    // 一次触摸只归一个窗口：记住发起窗口 id，拖拽期间其他窗口不重复响应
+    // （多窗口叠放时每帧都会对各自窗口调用本函数）。
+    static ImGuiID s_DragWindow = 0;
+
+    if (!ImGui::IsMouseDown(0))
+    {
+        s_DragWindow = 0;
+        return 0;
+    }
+
+    ImGuiWindow* win = ImGui::GetCurrentWindowRead();
+    if (win == NULL)
+    {
+        s_DragWindow = 0;
+        return 0;
+    }
+
+    if (s_DragWindow != 0)
+    {
+        if (s_DragWindow != win->ID)
+        {
+            return 0;
+        }
+    }
+    else
+    {
+        if (!ImGui::IsWindowHovered())
+        {
+            return 0;
+        }
+        // 项上按下走 item 自身交互（按钮 / 输入框 / 滑动条等），不启动滚动拖拽
+        if (ImGui::IsAnyItemHovered() || ImGui::IsAnyItemActive())
+        {
+            return 0;
+        }
+        // 标题栏按下留给窗口移动
+        if (win->TitleBarRect().Contains(ImGui::GetIO().MousePos))
+        {
+            return 0;
+        }
+        // 边框按下留给窗口缩放
+        if (win->ResizeBorderHovered != -1)
+        {
+            return 0;
+        }
+        // 滚动条按下留给原生滚动条拖拽
+        if (win->ScrollbarY && ImGui::GetWindowScrollbarRect(win, ImGuiAxis_Y).Contains(ImGui::GetIO().MousePos))
+        {
+            return 0;
+        }
+        // 内容未超出窗口：无滚动可拖
+        if (ImGui::GetScrollMaxY() <= 0.0f)
+        {
+            return 0;
+        }
+        s_DragWindow = win->ID;
+    }
+
+    // 鼠标帧增量取自 IO（1.92 起 ImGui 命名空间下无独立的 GetMouseDelta 自由函数）
+    ImVec2 delta = ImGui::GetIO().MouseDelta;
+    if (delta.y != 0.0f)
+    {
+        // SetScrollY 内部自行钳制到 [0, ScrollMaxY]
+        ImGui::SetScrollY(ImGui::GetScrollY() - delta.y);
+    }
+    return 0;
 }
 
 static void imgui_ExtensionInit()
@@ -4049,6 +4987,15 @@ static const luaL_reg Module_methods[] =
     {"get_frame_height", imgui_GetFrameHeight},
 
     {"set_scroll_here_y", imgui_SetScrollHereY},
+
+
+    // 项目自有 API（上游 extension-imgui 无对应实现）
+    {"get_screen_density", imgui_GetScreenDensity},
+    {"show_soft_keyboard", imgui_ShowSoftKeyboard},
+    {"set_next_window_content_size", imgui_SetNextWindowContentSize},
+    {"get_scroll_y", imgui_GetScrollY},
+    {"get_scroll_max_y", imgui_GetScrollMaxY},
+    {"drag_scroll_window", imgui_DragScrollWindow},
     {0, 0}
 };
 
@@ -4122,7 +5069,7 @@ static void LuaInit(lua_State* L)
      *
      * @field SELECTABLE_ALLOW_ITEM_OVERLAP
      */
-     lua_setfieldstringint(L, "SELECTABLE_ALLOW_ITEM_OVERLAP", ImGuiSelectableFlags_AllowItemOverlap);
+     lua_setfieldstringint(L, "SELECTABLE_ALLOW_ITEM_OVERLAP", ImGuiSelectableFlags_AllowOverlap);
 
     /**
      * TABITEM_UNSAVED_DOCUMENT
@@ -4215,7 +5162,7 @@ static void LuaInit(lua_State* L)
      *
      * @field TREENODE_ALLOW_ITEM_OVERLAP
      */
-     lua_setfieldstringint(L, "TREENODE_ALLOW_ITEM_OVERLAP", ImGuiTreeNodeFlags_AllowItemOverlap);
+     lua_setfieldstringint(L, "TREENODE_ALLOW_ITEM_OVERLAP", ImGuiTreeNodeFlags_AllowOverlap);
     /**
      * TREENODE_NO_TREE_PUSH_ON_OPEN
      *
@@ -5156,7 +6103,9 @@ static void LuaInit(lua_State* L)
      * Ensure child windows without border uses style.WindowPadding (ignored by default for non-bordered child windows, because more convenient)
      * @field WINDOWFLAGS_ALWAYSUSEWINDOWPADDING
      */
-     lua_setfieldstringint(L, "WINDOWFLAGS_ALWAYSUSEWINDOWPADDING", ImGuiWindowFlags_AlwaysUseWindowPadding);
+     // 该标志 1.90 起归属 ImGuiChildFlags（原 ImGuiWindowFlags_AlwaysUseWindowPadding 已废弃）；
+     // Lua 侧常量名保持不变，值改取 ChildFlags 版本。
+     lua_setfieldstringint(L, "WINDOWFLAGS_ALWAYSUSEWINDOWPADDING", ImGuiChildFlags_AlwaysUseWindowPadding);
     /**
      * WINDOWFLAGS_NONAVINPUTS
      * No gamepad/keyboard navigation within the window
@@ -5229,7 +6178,8 @@ static void LuaInit(lua_State* L)
      *
      * @field POPUPFLAGS_MOUSEBUTTONDEFAULT
      */
-     lua_setfieldstringint(L, "POPUPFLAGS_MOUSEBUTTONDEFAULT", ImGuiPopupFlags_MouseButtonDefault_);
+     // 旧名 ImGuiPopupFlags_MouseButtonDefault_ 已移除；其历史取值即 0（默认键），此处保留同一取值
+     lua_setfieldstringint(L, "POPUPFLAGS_MOUSEBUTTONDEFAULT", ImGuiPopupFlags_None);
     /**
      * POPUPFLAGS_NOOPENOVEREXISTINGPOPUP
      * For OpenPopup*(), BeginPopupContext*(): don't open if there's already a popup at the same level of the popup stack
@@ -5302,7 +6252,7 @@ static void LuaInit(lua_State* L)
      * Automatically expire the payload if the source cease to be submitted (otherwise payloads are persisting while being dragged)
      * @field DROPFLAGS_SOURCEAUTOEXPIREPAYLOAD
      */
-     lua_setfieldstringint(L, "DROPFLAGS_SOURCEAUTOEXPIREPAYLOAD", ImGuiDragDropFlags_SourceAutoExpirePayload);
+     lua_setfieldstringint(L, "DROPFLAGS_SOURCEAUTOEXPIREPAYLOAD", ImGuiDragDropFlags_PayloadAutoExpire);
     /**
      * DROPFLAGS_ACCEPTBEFOREDELIVERY
      * AcceptDragDropPayload() will returns true even before the mouse button is released. You can then call IsDelivery() to test if the payload needs to be delivered.
@@ -5722,6 +6672,13 @@ static void LuaInit(lua_State* L)
      * @field GLYPH_RANGES_VIETNAMESE
      */
      lua_setfieldstringint(L, "GLYPH_RANGES_VIETNAMESE", ExtImGuiGlyphRanges_Vietnamese);
+    /**
+     * GLYPH_RANGES_MULTILINGUAL
+     *              本工程自有的合并范围：Basic Latin + Latin Ext-A/B + Cyrillic +
+     *              General Punctuation + CJK 符号 / 假名 + 谚文 + CJK 统一表意 + 全角。
+     * @field GLYPH_RANGES_MULTILINGUAL
+     */
+     lua_setfieldstringint(L, "GLYPH_RANGES_MULTILINGUAL", ExtImGuiGlyphRanges_Multilingual);
 
     // For use with push_style_var / Imgui::PushStyleVar
     /**

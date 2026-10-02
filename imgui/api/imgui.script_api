@@ -1745,12 +1745,14 @@
     parameters:
     - name: ttf_data
       type: string
+    - name: data_size
+      type: number
     - name: font_size
       type: number
     - name: font_pixels
       type: number
     - name: glyph_ranges
-      type: string
+      type: number
     returns:
     - name: font_index
       type: number
@@ -3250,6 +3252,11 @@
     type: number
     desc: |
       GLYPH_RANGES_VIETNAMESE // Default + Vietnamese characters
+
+  - name: GLYPH_RANGES_MULTILINGUAL
+    type: number
+    desc: |
+      GLYPH_RANGES_MULTILINGUAL // 本扩展自定义：CHINESEFULL + Korean + Cyrillic + Latin 扩展 A/B 的并集
 
   - name: STYLEVAR_ALPHA
     type: number

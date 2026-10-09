@@ -889,7 +889,7 @@
       type: number
       optional: True
 
-  - name: text_get_size
+  - name: text_getsize
     type: function
     desc: |
       TextGetSize.
@@ -1745,12 +1745,14 @@
     parameters:
     - name: ttf_data
       type: string
+    - name: data_size
+      type: number
     - name: font_size
       type: number
     - name: font_pixels
       type: number
     - name: glyph_ranges
-      type: string
+      type: number
     returns:
     - name: font_index
       type: number
@@ -1842,7 +1844,7 @@
     - name: color
       type: number
 
-  - name: draw_progress_bar
+  - name: draw_progress
     type: function
     desc: |
       DrawProgressBar.
@@ -1862,17 +1864,17 @@
     - name: enabled
       type: boolean
 
-  - name: want_capture_mouse
+  - name: want_mouse_input
     type: function
     desc: |
       WantCaptureMouse.
 
-  - name: want_capture_keyboard
+  - name: want_keyboard_input
     type: function
     desc: |
       WantCaptureKeyboard.
 
-  - name: want_capture_text
+  - name: want_text_input
     type: function
     desc: |
       WantCaptureText.
@@ -3410,4 +3412,42 @@
     type: number
     desc: |
       STYLEVAR_SEPARATORTEXTPADDING // ImVec2 SeparatorTextPadding
+  - name: is_mouse_down
+    type: function
+    desc: |
+      IsMouseDown.
 
+  - name: get_mouse_pos
+    type: function
+    desc: |
+      GetMousePos.
+
+  - name: set_scroll_y
+    type: function
+    desc: |
+      SetScrollY.
+
+  - name: get_scroll_y
+    type: function
+    desc: |
+      GetScrollY.
+
+  - name: get_scroll_max_y
+    type: function
+    desc: |
+      GetScrollMaxY.
+
+  - name: drag_scroll_window
+    type: function
+    desc: |
+      DragScrollWindow.
+
+  - name: set_next_window_content_size
+    type: function
+    desc: |
+      SetNextWindowContentSize.
+
+  - name: set_next_window_scroll
+    type: function
+    desc: |
+      SetNextWindowScroll.

@@ -15,6 +15,7 @@
 // imgui renderer backend and possible platform extras
 #if defined(DM_PLATFORM_ANDROID)
 #include "imgui/imgui_impl_android.h"
+#include <dmsdk/dlib/android.h>   // dmAndroid::ThreadAttacher: soft keyboard and screen density queries
 #endif
 #include "imgui_impl_defold.h"
 
@@ -63,7 +64,7 @@ enum ExtImGuiGlyphRanges {
 static bool g_imgui_NewFrame        = false;
 static char* g_imgui_TextBuffer     = 0;
 static dmArray<ImFont*> g_imgui_Fonts;
-// Forward declaration: text_getsize (around line 1600) uses this for bounds checking; defined further below.
+// Forward declaration: text_getsize uses this for bounds checking; defined further below.
 static ImFont* imgui_GetFont(int index);
 static dmArray<ImgObject> g_imgui_Images;
 static bool g_RenderingEnabled      = true;
@@ -1559,7 +1560,7 @@ static int imgui_Text(lua_State* L)
 }
 
 /** TextGetSize
- * @name text_get_size
+ * @name text_getsize
  * @string text
  * @number font_size
  * @number [fontid]
@@ -2174,7 +2175,7 @@ static int imgui_Selectable(lua_State* L)
 /** Button
  * @name button
  * @string text
- * @number [width]
+ * @number [width]  optional; provide width and height together or omit both
  * @number [height]
  * @treturn boolean pushed
  */
@@ -2217,7 +2218,7 @@ static int imgui_SmallButton(lua_State* L)
 /** ButtonImage
  * @name button_image
  * @number texture_id
- * @number [width]
+ * @number [width]  optional; provide width and height together or omit both
  * @number [height]
  * @treturn boolean pushed
  */
@@ -2664,6 +2665,50 @@ static int imgui_IsMouseClicked(lua_State* L)
     bool clicked = ImGui::IsMouseClicked(button);
     lua_pushboolean(L, clicked);
     return 1;
+}
+
+/** IsMouseDown
+ * @name is_mouse_down
+ * @number button
+ * @treturn boolean down
+ */
+static int imgui_IsMouseDown(lua_State* L)
+{
+    DM_LUA_STACK_CHECK(L, 1);
+    imgui_NewFrame();
+    uint32_t button = luaL_checknumber(L, 1);
+    bool down = ImGui::IsMouseDown(button);
+    lua_pushboolean(L, down);
+    return 1;
+}
+
+/** GetMousePos
+ * @name get_mouse_pos
+ * @treturn number x
+ * @treturn number y
+ */
+static int imgui_GetMousePos(lua_State* L)
+{
+    DM_LUA_STACK_CHECK(L, 2);
+    imgui_NewFrame();
+    ImVec2 pos = ImGui::GetMousePos();
+    lua_pushnumber(L, pos.x);
+    lua_pushnumber(L, pos.y);
+    return 2;
+}
+
+/** SetScrollY
+ * @name set_scroll_y
+ * @number y
+ * @return nothing
+ */
+static int imgui_SetScrollY(lua_State* L)
+{
+    DM_LUA_STACK_CHECK(L, 0);
+    imgui_NewFrame();
+    float y = luaL_checknumber(L, 1);
+    ImGui::SetScrollY(y);
+    return 0;
 }
 
 /** IsItemActive
@@ -3731,7 +3776,7 @@ static int imgui_DrawRectFilled(lua_State* L)
 }
 
 /** DrawProgressBar
- * @name draw_progress_bar
+ * @name draw_progress
  * @number progress
  * @number xsize
  * @number ysize
@@ -3765,7 +3810,7 @@ static int imgui_SetRenderingEnabled(lua_State* L)
 // ----------------------------
 
 /** WantCaptureMouse
- * @name want_capture_mouse
+ * @name want_mouse_input
  */
 static int imgui_WantCaptureMouse(lua_State* L)
 {
@@ -3776,7 +3821,7 @@ static int imgui_WantCaptureMouse(lua_State* L)
 }
 
 /** WantCaptureKeyboard
- * @name want_capture_keyboard
+ * @name want_keyboard_input
  */
 static int imgui_WantCaptureKeyboard(lua_State* L)
 {
@@ -3787,7 +3832,7 @@ static int imgui_WantCaptureKeyboard(lua_State* L)
 }
 
 /** WantCaptureText
- * @name want_capture_text
+ * @name want_text_input
  */
 static int imgui_WantCaptureText(lua_State* L)
 {
@@ -3856,6 +3901,145 @@ static void imgui_Shutdown()
     ImGuiIO& io = ImGui::GetIO();
     io.Fonts->Clear();
     ImGui::DestroyContext();
+}
+
+// ----------------------------
+// ----- Extension-specific APIs --------
+// ----------------------------
+// The following APIs have no counterpart in upstream extension-imgui.
+
+/** SetNextWindowContentSize
+ * @name set_next_window_content_size
+ * @number width  0 = unconstrained width
+ * @number height content height (scroll basis: > 0 shows a vertical scrollbar when the window is too short)
+ */
+static int imgui_SetNextWindowContentSize(lua_State* L)
+{
+    DM_LUA_STACK_CHECK(L, 0);
+    imgui_NewFrame();
+    float width  = (float)luaL_checknumber(L, 1);
+    float height = (float)luaL_checknumber(L, 2);
+    ImGui::SetNextWindowContentSize(ImVec2(width, height));
+    return 0;
+}
+
+/** SetNextWindowScroll
+ * @name set_next_window_scroll
+ * @number x
+ * @number y
+ */
+static int imgui_SetNextWindowScroll(lua_State* L)
+{
+    DM_LUA_STACK_CHECK(L, 0);
+    imgui_NewFrame();
+    float x = (float)luaL_checknumber(L, 1);
+    float y = (float)luaL_checknumber(L, 2);
+    ImGui::SetNextWindowScroll(ImVec2(x, y));
+    return 0;
+}
+
+/** GetScrollY
+ * @name get_scroll_y
+ * @treturn number current vertical scroll
+ */
+static int imgui_GetScrollY(lua_State* L)
+{
+    DM_LUA_STACK_CHECK(L, 1);
+    imgui_NewFrame();
+    lua_pushnumber(L, ImGui::GetScrollY());
+    return 1;
+}
+
+/** GetScrollMaxY
+ * @name get_scroll_max_y
+ * @treturn number maximum vertical scroll (0 = content fits)
+ */
+static int imgui_GetScrollMaxY(lua_State* L)
+{
+    DM_LUA_STACK_CHECK(L, 1);
+    imgui_NewFrame();
+    lua_pushnumber(L, ImGui::GetScrollMaxY());
+    return 1;
+}
+
+/** DragScrollWindow
+ * @name drag_scroll_window
+ * Touch drag scrolling: holding and dragging the window blank area scrolls the window instead of moving it.
+ * Call once per frame after Begin while the window is current. Presses on the title bar / scrollbar /
+ * any item are left to native interaction; the hover test happens only at press time,
+ * so scrolling continues even when the pointer drags away from the initial blank area.
+ */
+static int imgui_DragScrollWindow(lua_State* L)
+{
+    DM_LUA_STACK_CHECK(L, 0);
+    imgui_NewFrame();
+
+    // One touch belongs to one window: remember the initiating window id; other windows do not
+    // respond again during the drag (stacked windows all call this every frame).
+    static ImGuiID s_DragWindow = 0;
+
+    if (!ImGui::IsMouseDown(0))
+    {
+        s_DragWindow = 0;
+        return 0;
+    }
+
+    ImGuiWindow* win = ImGui::GetCurrentWindowRead();
+    if (win == NULL)
+    {
+        s_DragWindow = 0;
+        return 0;
+    }
+
+    if (s_DragWindow != 0)
+    {
+        if (s_DragWindow != win->ID)
+        {
+            return 0;
+        }
+    }
+    else
+    {
+        if (!ImGui::IsWindowHovered())
+        {
+            return 0;
+        }
+        // Presses on items go to the item's own interaction (buttons / input fields / sliders); no scroll drag
+        if (ImGui::IsAnyItemHovered() || ImGui::IsAnyItemActive())
+        {
+            return 0;
+        }
+        // Title bar presses are left to window movement
+        if (win->TitleBarRect().Contains(ImGui::GetIO().MousePos))
+        {
+            return 0;
+        }
+        // Border presses are left to window resizing
+        if (win->ResizeBorderHovered != -1)
+        {
+            return 0;
+        }
+        // Scrollbar presses are left to native scrollbar dragging
+        if (win->ScrollbarY && ImGui::GetWindowScrollbarRect(win, ImGuiAxis_Y).Contains(ImGui::GetIO().MousePos))
+        {
+            return 0;
+        }
+        // Content fits the window: nothing to scroll
+        if (ImGui::GetScrollMaxY() <= 0.0f)
+        {
+            return 0;
+        }
+        s_DragWindow = win->ID;
+    }
+
+    // Per-frame mouse delta comes from IO (1.92 has no standalone GetMouseDelta free function in the ImGui namespace)
+    ImVec2 delta = ImGui::GetIO().MouseDelta;
+    if (delta.y != 0.0f)
+    {
+        // SetScrollY clamps internally to [0, ScrollMaxY]
+        ImGui::SetScrollY(ImGui::GetScrollY() - delta.y);
+    }
+    return 0;
 }
 
 static void imgui_ExtensionInit()
@@ -4043,6 +4227,8 @@ static const luaL_reg Module_methods[] =
     {"is_item_hovered", imgui_IsItemHovered},
     {"get_item_rect_max", imgui_GetItemRectMax},
     {"is_mouse_clicked", imgui_IsMouseClicked},
+    {"is_mouse_down", imgui_IsMouseDown},
+    {"get_mouse_pos", imgui_GetMousePos},
     {"is_mouse_double_clicked", imgui_IsMouseDoubleClicked},
     {"set_keyboard_focus_here", imgui_SetKeyboardFocusHere},
     {"set_item_default_focus", imgui_SetItemDefaultFocus},
@@ -4076,16 +4262,16 @@ static const luaL_reg Module_methods[] =
     {"set_scroll_here_y", imgui_SetScrollHereY},
 
 
-{0, 0}
+    // Extension-specific API (no counterpart in upstream extension-imgui)
+    {"set_next_window_content_size", imgui_SetNextWindowContentSize},
+    {"set_next_window_scroll", imgui_SetNextWindowScroll},
+    {"get_scroll_y", imgui_GetScrollY},
+    {"get_scroll_max_y", imgui_GetScrollMaxY},
+    {"set_scroll_y", imgui_SetScrollY},
+    {"drag_scroll_window", imgui_DragScrollWindow},
+    {0, 0}
 };
 
-static void lua_setfieldstringstring(lua_State* L, const char* key, const char* value)
-{
-    int top = lua_gettop(L);
-    lua_pushstring(L, value);
-    lua_setfield(L, -2, key);
-    assert(top == lua_gettop(L));
-}
 static void lua_setfieldstringint(lua_State* L, const char* key, uint32_t value)
 {
     int top = lua_gettop(L);

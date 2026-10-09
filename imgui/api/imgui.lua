@@ -779,6 +779,14 @@ function imgui.is_mouse_double_clicked(button) end
 ---@return boolean clicked
 function imgui.is_mouse_clicked(button) end
 
+---@param button integer|imgui.MOUSEBUTTON
+---@return boolean down
+function imgui.is_mouse_down(button) end
+
+---@return number x
+---@return number y
+function imgui.get_mouse_pos() end
+
 ---@return boolean active
 function imgui.is_item_active() end
 
@@ -830,16 +838,6 @@ function imgui.add_input_character(character) end
 function imgui.add_input_characters(characters) end
 
 ---
---- TEXT INPUT
-
----@param character string
-function imgui.add_input_character(character) end
-
----@param characters string
-function imgui.add_input_characters(characters) end
-
-
----
 --- TREE
 
 ---@param label string
@@ -885,6 +883,34 @@ function imgui.end_window() end
 ---@param height number
 ---@param cond? integer
 function imgui.set_next_window_size(width, height, cond) end
+
+---Declare window content size (call before Begin): explicit basis for scroll decisions, 0 = unconstrained on that axis.
+---A vertical scrollbar appears automatically when window height < content height + WindowPadding x 2.
+---@param width number
+---@param height number
+function imgui.set_next_window_content_size(width, height) end
+
+---Set initial window scroll (call before Begin; used to reset scroll position when opening a panel).
+---@param x number
+---@param y number
+function imgui.set_next_window_scroll(x, y) end
+
+---@return number y current vertical scroll
+--- Drag-scroll on blank areas: call every frame after Begin for the current window. Holding and dragging
+--- the window body pans the content vertically (no effect when content fits); title bar presses move the
+--- window, scrollbar presses use native drag, and presses on widgets keep their own interaction - none
+--- are taken over. Hit-testing happens only at press time; dragging away does not interrupt scrolling.
+function imgui.drag_scroll_window() end
+
+--- @return number current vertical scroll
+function imgui.get_scroll_y() end
+
+---@return number max_y maximum vertical scroll (0 = content fits)
+function imgui.get_scroll_max_y() end
+
+---Set current window vertical scroll (clamped internally to [0, scroll max]).
+---@param y number
+function imgui.set_scroll_y(y) end
 
 ---@param x number
 ---@param y number
@@ -1167,7 +1193,7 @@ function imgui.drag_float(label, value, speed, min, max, precision) end
 ---@param value number
 ---@param min number
 ---@param max number
----@param precision? integer
+---@param precision? integer|string number = decimals of the value text (%.Nf); string = used as printf format verbatim ("" hides the value text)
 ---@return boolean changed
 ---@return number? value
 function imgui.slider_float(label, value, min, max, precision) end
@@ -1395,6 +1421,8 @@ function imgui.set_scroll_here_y(center_y_ratio) end
 ---@return integer? font_id
 function imgui.font_add_ttf_file(filename, size, glyph_ranges) end
 
+--- Register a font. Size is determined by font_pixels (written to ImFont::LegacySize, multiplied by font_scale at runtime);
+--- the font_size parameter is kept for signature compatibility only and is ignored by the extension.
 ---@param data string
 ---@param data_size integer
 ---@param font_size number

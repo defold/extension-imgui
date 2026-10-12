@@ -3903,6 +3903,159 @@ static void imgui_Shutdown()
     ImGui::DestroyContext();
 }
 
+// ----------------------------
+// ----- Extension-specific APIs --------
+// ----------------------------
+// The following APIs have no counterpart in upstream extension-imgui.
+
+/** QueryScreenDensity
+ * Physical screen density (dpi), queried once per process and cached.
+ * Android reads DisplayMetrics.densityDpi via JNI (public API via reflection, no manifest change needed);
+ * other platforms return 96 - the Lua side clamps values below the reference density to 1x, so desktop is effectively uncompensated.
+ */
+static float imgui_QueryScreenDensity()
+{
+    static float s_density = 0.0f; // 0 = not queried yet
+    if (s_density > 0.0f)
+    {
+        return s_density;
+    }
+
+    s_density = 96.0f;
+#if defined(DM_PLATFORM_ANDROID)
+    dmAndroid::ThreadAttacher attacher;
+    JNIEnv* env = attacher.GetEnv();
+    ANativeActivity* activity = attacher.GetActivity();
+    if (env && activity && activity->clazz)
+    {
+        jobject activity_obj = activity->clazz;
+        jclass activity_class = env->GetObjectClass(activity_obj);
+        jmethodID get_resources = env->GetMethodID(activity_class, "getResources", "()Landroid/content/res/Resources;");
+        jobject resources = env->CallObjectMethod(activity_obj, get_resources);
+        if (resources && env->ExceptionCheck() == JNI_FALSE)
+        {
+            jclass resources_class = env->GetObjectClass(resources);
+            jmethodID get_metrics = env->GetMethodID(resources_class, "getDisplayMetrics", "()Landroid/util/DisplayMetrics;");
+            jobject metrics = env->CallObjectMethod(resources, get_metrics);
+            if (metrics && env->ExceptionCheck() == JNI_FALSE)
+            {
+                jclass metrics_class = env->GetObjectClass(metrics);
+                jfieldID dpi_field = env->GetFieldID(metrics_class, "densityDpi", "I");
+                int dpi = (int)env->GetIntField(metrics, dpi_field);
+                if (dpi > 0)
+                {
+                    s_density = (float)dpi;
+                }
+            }
+        }
+        if (env->ExceptionCheck() == JNI_TRUE)
+        {
+            env->ExceptionClear();
+        }
+    }
+#endif
+    dmLogInfo("imgui: screen density = %.0f dpi", s_density);
+    return s_density;
+}
+
+/** GetScreenDensity
+ * @name get_screen_density
+ * @treturn number screen density (dpi)
+ */
+static int imgui_GetScreenDensity(lua_State* L)
+{
+    DM_LUA_STACK_CHECK(L, 1);
+    lua_pushnumber(L, imgui_QueryScreenDensity());
+    return 1;
+}
+
+#if defined(DM_PLATFORM_ANDROID)
+/** ShowSoftKeyboard
+ * @name show_soft_keyboard
+ * Show/hide the Android soft keyboard (IME).
+ *
+ * Goes through the engine's own DefoldActivity#showSoftInput instead of calling InputMethodManager
+ * on the decor view directly: modern IMEs (Gboard with targetSdk >= 28) express backspace only via
+ * InputConnection.deleteSurroundingText, and the decor view has no InputConnection, so backspace
+ * would be silently dropped. The engine's hidden input field (EditText +
+ * dispatched by the input system as a key_backspace action.
+ * DefoldInputWrapper) receives deleteSurroundingText and re-issues a native backspace key event,
+ *
+ * @boolean show true to show / false to hide
+ * @number [keyboard_type] 0 default / 1 numeric / 2 email / 3 password (must match
+ *         DefoldActivity.GLFWKeyboardType; read on show only)
+ * @treturn boolean whether the engine call was issued
+ */
+static int imgui_ShowSoftKeyboard(lua_State* L)
+{
+    DM_LUA_STACK_CHECK(L, 1);
+    int show = lua_toboolean(L, 1);
+    int keyboard_type = 0;
+    if (lua_gettop(L) >= 2 && !lua_isnil(L, 2))
+    {
+        keyboard_type = (int) luaL_checkinteger(L, 2);
+    }
+
+    bool ok = false;
+    dmAndroid::ThreadAttacher attacher;
+    JNIEnv* env = attacher.GetEnv();
+    ANativeActivity* activity = attacher.GetActivity();
+    if (env && activity && activity->clazz)
+    {
+        jobject activity_obj = activity->clazz;
+        jclass activity_class = env->GetObjectClass(activity_obj);
+
+        if (show)
+        {
+            jmethodID set_hidden = env->GetMethodID(activity_class, "setUseHiddenInputField", "(Z)V");
+            if (set_hidden)
+            {
+                env->CallVoidMethod(activity_obj, set_hidden, JNI_TRUE);
+            }
+            jmethodID show_method = env->GetMethodID(activity_class, "showSoftInput", "(I)V");
+            if (show_method)
+            {
+                env->CallVoidMethod(activity_obj, show_method, (jint) keyboard_type);
+                ok = env->ExceptionCheck() == JNI_FALSE;
+            }
+        }
+        else
+        {
+            // The engine hideSoftInput also collapses the IME and restores immersive mode state.
+            jmethodID hide_method = env->GetMethodID(activity_class, "hideSoftInput", "()V");
+            if (hide_method)
+            {
+                env->CallVoidMethod(activity_obj, hide_method);
+                ok = env->ExceptionCheck() == JNI_FALSE;
+            }
+        }
+
+        if (env->ExceptionCheck() == JNI_TRUE)
+        {
+            env->ExceptionClear();
+            ok = false;
+        }
+    }
+
+    lua_pushboolean(L, ok ? 1 : 0);
+    return 1;
+}
+#else
+/** ShowSoftKeyboard
+ * @name show_soft_keyboard
+ * Not implemented on this platform, always returns false.
+ * @boolean show ignored
+ * @number [keyboard_type] ignored
+ * @treturn boolean false
+ */
+static int imgui_ShowSoftKeyboard(lua_State* L)
+{
+    DM_LUA_STACK_CHECK(L, 1);
+    lua_pushboolean(L, 0);
+    return 1;
+}
+#endif
+
 /** SetNextWindowContentSize
  * @name set_next_window_content_size
  * @number width  0 = unconstrained width
@@ -4262,6 +4415,10 @@ static const luaL_reg Module_methods[] =
     {"get_scroll_max_y", imgui_GetScrollMaxY},
     {"set_scroll_y", imgui_SetScrollY},
     {"drag_scroll_window", imgui_DragScrollWindow},
+
+    // Extension-specific API (no counterpart in upstream extension-imgui)
+    {"get_screen_density", imgui_GetScreenDensity},
+    {"show_soft_keyboard", imgui_ShowSoftKeyboard},
     {0, 0}
 };
 

@@ -1441,6 +1441,21 @@ function imgui.font_pop() end
 ---@return number old_scale
 function imgui.font_scale(font_id, scale) end
 
+--- Physical screen density (dpi, queried once per process and cached).
+--- On Android reads DisplayMetrics.densityDpi via JNI; other platforms return 96 (Lua treats it as 1x).
+--- Intended for UI scaling compensation on high-density screens.
+---@return number dpi
+function imgui.get_screen_density() end
+
+
+--- Show/hide the Android soft keyboard (IME). Routes through the engine's DefoldActivity hidden input field
+--- (hidden EditText + DefoldInputWrapper); backspace / enter / text are delivered as standard engine input events.
+--- Mobile only.
+---@param show boolean
+---@param keyboard_type number|nil 0 default / 1 numeric / 2 email / 3 password (read on show only)
+---@return boolean ok
+function imgui.show_soft_keyboard(show, keyboard_type) end
+
 ---@return number font_size
 function imgui.get_font_size() end
 

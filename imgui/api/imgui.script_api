@@ -3451,3 +3451,18 @@
     type: function
     desc: |
       SetNextWindowScroll.
+
+  - name: show_soft_keyboard
+    type: function
+    desc: |
+      ShowSoftKeyboard.
+
+  - name: hide_soft_keyboard
+    type: function
+    desc: |
+      HideSoftKeyboard.
+
+  - name: get_screen_density
+    type: function
+    desc: |
+      GetScreenDensity.

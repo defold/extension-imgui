@@ -1480,6 +1480,13 @@ function imgui.draw_progress(progress, width, height) end
 ---@param enabled boolean
 function imgui.set_rendering_enabled(enabled) end
 
+---Ends the current ImGui frame and draws it into an offscreen render target owned by the
+---extension; the frame is not drawn to the default target in POST_RENDER for this frame.
+---Use the returned texture handle with render.enable_texture to composite the UI inside a
+---render script pipeline, so engine post processing applies to it as well.
+---@return number texture color texture handle of the offscreen target, 0 if nothing was rendered
+function imgui.render_to_texture() end
+
 ---
 --- INPUT CAPTURE
 ---

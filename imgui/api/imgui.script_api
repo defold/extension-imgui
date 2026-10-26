@@ -1864,6 +1864,15 @@
     - name: enabled
       type: boolean
 
+  - name: render_to_texture
+    type: function
+    desc: |
+      RenderToTexture.
+      Ends the current ImGui frame and draws it into an offscreen render target owned by the
+      extension instead of the frame's final render target. The returned texture handle can be
+      bound with render.enable_texture so that a render script can composite the UI inside its own
+      pipeline, which is what makes engine post processing apply to the UI as well.
+
   - name: want_mouse_input
     type: function
     desc: |

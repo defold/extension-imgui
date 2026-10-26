@@ -21,6 +21,8 @@
 
 #include <dmsdk/sdk.h>
 
+#include <stdint.h> // uintptr_t: texture handles are passed through Lua as numbers
+
 #include "extension_imgui.h"
 
 #if !defined(DM_HEADLESS)
@@ -62,6 +64,10 @@ enum ExtImGuiGlyphRanges {
 };
 
 static bool g_imgui_NewFrame        = false;
+// Set when the render script already drew this frame's UI into the offscreen
+// target via imgui.render_to_texture(). POST_RENDER must then not draw it again:
+// that pass writes to the default target and would bypass engine post processing.
+static bool g_imgui_OffscreenRendered = false;
 static char* g_imgui_TextBuffer     = 0;
 static dmArray<ImFont*> g_imgui_Fonts;
 // Forward declaration: text_getsize uses this for bounds checking; defined further below.
@@ -3686,11 +3692,60 @@ static int imgui_GetFontSize(lua_State* L)
 }
 
 
+/** RenderToTexture
+ * Ends the current ImGui frame and draws it into an offscreen render target owned
+ * by this extension instead of the frame's final render target. The returned
+ * texture handle can be bound with render.enable_texture so that a render script
+ * can composite the UI inside its own pipeline, which is what makes engine post
+ * processing (CRT shaders, blur, transitions, ...) apply to the UI as well.
+ *
+ * Must be called from the render script update, after the game scripts have built
+ * their UI for the frame. Returns 0 when there is nothing to render.
+ *
+ * @name render_to_texture
+ * @return texture [type:number] color texture handle of the offscreen target, 0 if nothing was rendered
+ */
+static int imgui_RenderToTexture(lua_State* L)
+{
+    DM_LUA_STACK_CHECK(L, 1);
+
+    dmGraphics::HTexture texture = 0;
+    if (g_imgui_NewFrame)
+    {
+        imgui_InvokeDrawCallbacks();
+        ImGui::Render();
+
+        uint32_t width  = 0;
+        uint32_t height = 0;
+        texture = ImGui_ImplDefold_RenderToTexture(&width, &height);
+        g_imgui_NewFrame = false;
+        g_imgui_OffscreenRendered = texture != 0;
+    }
+
+    lua_pushnumber(L, (double) (uintptr_t) texture);
+    return 1;
+}
+
 // ----------------------------
 // ----- DRAW -----------------
 // ----------------------------
 static dmExtension::Result imgui_Draw(dmExtension::Params* params)
 {
+    if (g_imgui_OffscreenRendered)
+    {
+        // The UI was already drawn into the offscreen target from the render script
+        // update, so it participates in engine post processing.
+        //
+        // Do NOT call NewFrame() here. On the direct path the next frame is started
+        // lazily by the first widget call, i.e. after the engine has fed that frame's
+        // input. Opening the frame early from POST_RENDER makes ImGui evaluate input
+        // (mouse state, hover, focus) at the end of the previous frame instead, which
+        // shifts all interaction by one frame and makes auto-resizing windows keep a
+        // stale size.
+        g_imgui_OffscreenRendered = false;
+        return dmExtension::RESULT_OK;
+    }
+
     imgui_NewFrame();
 
     imgui_InvokeDrawCallbacks();
@@ -4198,6 +4253,7 @@ static const luaL_reg Module_methods[] =
     {"draw_line", imgui_DrawLine},
     {"draw_progress", imgui_DrawProgressBar},
     {"set_rendering_enabled", imgui_SetRenderingEnabled},
+    {"render_to_texture", imgui_RenderToTexture},
     {"demo", imgui_Demo},
 
     {"set_mouse_input", imgui_SetMouseInput},

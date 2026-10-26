@@ -120,9 +120,24 @@ namespace
         dmResource::HFactory                 m_ResourceFactory;
         uint32_t                             m_NextTextureId;
         dmArray<TextureRef>                  m_Textures;
+
+        // Offscreen UI target: imgui.render_to_texture() draws the current frame
+        // into this texture so a render script can sample and composite it into
+        // its own pipeline (which is what makes engine post processing apply to UI).
+        dmGraphics::HRenderTarget            m_OffscreenTarget;
+        dmGraphics::HTexture                 m_OffscreenTexture;
+        uint32_t                             m_OffscreenWidth;
+        uint32_t                             m_OffscreenHeight;
+        // True while drawing into the offscreen target: its scissor origin is the
+        // bottom-left corner, unlike the swapchain (see SetClipRect).
+        bool                                 m_RenderingToTexture;
     };
 
     Renderer g_Renderer = {};
+
+    // Defined further down together with the other offscreen target helpers;
+    // forward declared here so shutdown can release the target.
+    static void DestroyOffscreenTarget();
 
     static const ShaderResourceSpec* GetShaderResources(uint32_t* count, bool* separate_texture_sampler)
     {
@@ -393,9 +408,17 @@ namespace
         dmGraphics::AdapterFamily family = dmGraphics::GetInstalledAdapterFamily();
         // Defold's Metal backbuffer path flips scissor Y internally, so it needs
         // the same bottom-left coordinates as OpenGL here.
+        //
+        // Render targets need the same treatment: on the swapchain the engine flips
+        // the image with a negative-height viewport while the scissor keeps a
+        // top-left origin; a render target has no such flip, so its scissor origin
+        // is bottom-left and the rect has to be flipped explicitly. Full-screen clip
+        // rects are unaffected (a mirrored full-screen rect is itself), but smaller
+        // ones such as popups or tooltips would be clipped at the mirrored position.
         if (family == dmGraphics::ADAPTER_FAMILY_OPENGL ||
             family == dmGraphics::ADAPTER_FAMILY_OPENGLES ||
-            family == dmGraphics::ADAPTER_FAMILY_METAL)
+            family == dmGraphics::ADAPTER_FAMILY_METAL ||
+            g_Renderer.m_RenderingToTexture)
             y = fb_height - (y + height);
 
         dmGraphics::SetScissor(context, x, y, width, height);
@@ -549,6 +572,7 @@ bool ImGui_ImplDefold_Init(dmResource::HFactory resource_factory)
 
 void ImGui_ImplDefold_Shutdown()
 {
+    DestroyOffscreenTarget();
     DestroyDeviceObjects();
 
     // Destroy GPU resources of dynamic textures still referenced (mirrors the official GL backend)
@@ -732,6 +756,132 @@ static void ImGui_ImplDefold_UpdateTextures(ImDrawData* draw_data)
                 ImGui_ImplDefold_UpdateTexture(tex);
 }
 
+
+namespace
+{
+    static void DestroyOffscreenTarget()
+    {
+        if (g_Renderer.m_OffscreenTarget)
+        {
+            // The color attachment texture is owned by the render target and is
+            // destroyed with it; do not call DeleteTexture on it separately.
+            dmGraphics::DeleteRenderTarget(g_Renderer.m_Context, g_Renderer.m_OffscreenTarget);
+        }
+        g_Renderer.m_OffscreenTarget  = 0;
+        g_Renderer.m_OffscreenTexture = 0;
+        g_Renderer.m_OffscreenWidth   = 0;
+        g_Renderer.m_OffscreenHeight  = 0;
+    }
+
+    static bool EnsureOffscreenTarget(uint32_t width, uint32_t height)
+    {
+        if (width == 0 || height == 0)
+        {
+            return false;
+        }
+
+        dmGraphics::HContext context = g_Renderer.m_Context;
+        if (g_Renderer.m_OffscreenTarget && g_Renderer.m_OffscreenWidth == width && g_Renderer.m_OffscreenHeight == height)
+        {
+            // Handle looks valid but the backend dropped the texture (e.g. on a context
+            // rebuild): recreate it once instead of sampling a dead handle.
+            if (g_Renderer.m_OffscreenTexture && dmGraphics::GetRenderTargetTexture(context, g_Renderer.m_OffscreenTarget, dmGraphics::BUFFER_TYPE_COLOR0_BIT))
+            {
+                return true;
+            }
+            DestroyOffscreenTarget();
+        }
+        else
+        {
+            DestroyOffscreenTarget();
+        }
+
+        dmGraphics::RenderTargetCreationParams params = {};
+
+        // Creation params only describe the allocation (size / format / usage);
+        // sampling state belongs to m_ColorBufferParams below.
+        dmGraphics::TextureCreationParams& color_create = params.m_ColorBufferCreationParams[0];
+        color_create.m_Width  = (uint16_t) width;
+        color_create.m_Height = (uint16_t) height;
+
+        dmGraphics::TextureParams& color_params = params.m_ColorBufferParams[0];
+        color_params.m_Width     = (uint16_t) width;
+        color_params.m_Height    = (uint16_t) height;
+        color_params.m_Depth     = 1;
+        color_params.m_Format    = dmGraphics::TEXTURE_FORMAT_RGBA;
+        color_params.m_MinFilter = dmGraphics::TEXTURE_FILTER_LINEAR;
+        color_params.m_MagFilter = dmGraphics::TEXTURE_FILTER_LINEAR;
+        color_params.m_UWrap     = dmGraphics::TEXTURE_WRAP_CLAMP_TO_EDGE;
+        color_params.m_VWrap     = dmGraphics::TEXTURE_WRAP_CLAMP_TO_EDGE;
+
+        // The whole UI is redrawn every frame, so the pass can start from a clear.
+        params.m_ColorBufferLoadOps[0]  = dmGraphics::ATTACHMENT_OP_CLEAR;
+        // STORE must be set explicitly: the store op of a zero-initialized struct is
+        // DONT_CARE, and a Vulkan render pass then discards the color attachment when
+        // the pass ends, leaving undefined texel values behind (sampled as noise or
+        // solid black). The engine's own render.render_target also sets STORE.
+        params.m_ColorBufferStoreOps[0] = dmGraphics::ATTACHMENT_OP_STORE;
+        params.m_ColorBufferClearValue[0][0] = 0.0f;
+        params.m_ColorBufferClearValue[0][1] = 0.0f;
+        params.m_ColorBufferClearValue[0][2] = 0.0f;
+        params.m_ColorBufferClearValue[0][3] = 0.0f;
+        params.m_SampleCount            = 1;
+
+        g_Renderer.m_OffscreenTarget = dmGraphics::NewRenderTarget(context, dmGraphics::BUFFER_TYPE_COLOR0_BIT, params);
+        if (!g_Renderer.m_OffscreenTarget)
+        {
+            dmLogError("Failed to create ImGui offscreen render target (%u x %u)", width, height);
+            return false;
+        }
+
+        g_Renderer.m_OffscreenTexture = dmGraphics::GetRenderTargetTexture(context, g_Renderer.m_OffscreenTarget, dmGraphics::BUFFER_TYPE_COLOR0_BIT);
+        if (!g_Renderer.m_OffscreenTexture)
+        {
+            dmLogError("ImGui offscreen render target has no color texture (%u x %u)", width, height);
+            DestroyOffscreenTarget();
+            return false;
+        }
+
+        g_Renderer.m_OffscreenWidth  = width;
+        g_Renderer.m_OffscreenHeight = height;
+        return true;
+    }
+} // namespace
+
+dmGraphics::HTexture ImGui_ImplDefold_RenderToTexture(uint32_t* out_width, uint32_t* out_height)
+{
+    ImDrawData* draw_data = ImGui::GetDrawData();
+    if (!draw_data || out_width == 0 || out_height == 0)
+    {
+        return 0;
+    }
+
+    int fb_width  = (int) (draw_data->DisplaySize.x * draw_data->FramebufferScale.x);
+    int fb_height = (int) (draw_data->DisplaySize.y * draw_data->FramebufferScale.y);
+    if (fb_width <= 0 || fb_height <= 0 || draw_data->CmdListsCount <= 0)
+    {
+        return 0;
+    }
+
+    if (!EnsureOffscreenTarget((uint32_t) fb_width, (uint32_t) fb_height))
+    {
+        return 0;
+    }
+
+    dmGraphics::HContext context = g_Renderer.m_Context;
+    dmGraphics::SetRenderTarget(context, g_Renderer.m_OffscreenTarget, 0);
+    // Transparent clear: pixels the UI does not cover keep alpha = 0 so the
+    // compositing pass in the render script lets the scene show through.
+    dmGraphics::Clear(context, dmGraphics::BUFFER_TYPE_COLOR0_BIT, 0, 0, 0, 0, 1.0f, 0);
+    g_Renderer.m_RenderingToTexture = true;
+    ImGui_ImplDefold_RenderDrawData(draw_data);
+    g_Renderer.m_RenderingToTexture = false;
+    dmGraphics::SetRenderTarget(context, 0, 0);
+
+    *out_width  = g_Renderer.m_OffscreenWidth;
+    *out_height = g_Renderer.m_OffscreenHeight;
+    return g_Renderer.m_OffscreenTexture;
+}
 
 void ImGui_ImplDefold_RenderDrawData(ImDrawData* draw_data)
 {

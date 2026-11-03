@@ -56,7 +56,7 @@ namespace
         CreateHLSLResourceMapping(16057607012685438136ULL, 1, 1, 2), // Texture_separated -> Sampler(s0, space1)
     };
 
-    static const char* HLSL_ROOT_SIGNATURE_PATH = "/imgui/shaders/imgui_hlsl_51.rootsig";
+    static const char* HLSL_ROOT_SIGNATURE_PATH = "/imgui/shaders/imgui_hlsl_60.rootsig";
 
     struct ShaderResourceSpec
     {
@@ -89,8 +89,8 @@ namespace
     };
 
     static const ShaderResourceSpec DIRECTX_SHADER_RESOURCES[] = {
-        { "/imgui/shaders/imgui_hlsl_51.vert.dxbc", dmGraphics::ShaderDesc::SHADER_TYPE_VERTEX,   dmGraphics::ShaderDesc::LANGUAGE_HLSL_51, 0, 0 },
-        { "/imgui/shaders/imgui_hlsl_51.frag.dxbc", dmGraphics::ShaderDesc::SHADER_TYPE_FRAGMENT, dmGraphics::ShaderDesc::LANGUAGE_HLSL_51, 0, 0 },
+        { "/imgui/shaders/imgui_hlsl_60.vert.dxil", dmGraphics::ShaderDesc::SHADER_TYPE_VERTEX,   dmGraphics::ShaderDesc::LANGUAGE_HLSL_60, 0, 0 },
+        { "/imgui/shaders/imgui_hlsl_60.frag.dxil", dmGraphics::ShaderDesc::SHADER_TYPE_FRAGMENT, dmGraphics::ShaderDesc::LANGUAGE_HLSL_60, 0, 0 },
     };
 
     static const uint32_t MAX_SHADER_RESOURCE_COUNT = sizeof(STANDARD_SHADER_RESOURCES) / sizeof(STANDARD_SHADER_RESOURCES[0]);
@@ -186,7 +186,7 @@ namespace
         shader.m_Source.m_Count = data_size;
         shader.m_MslResourceMapping.m_Data  = (dmGraphics::ShaderDesc::MSLResourceMapping*) spec.m_MslResources;
         shader.m_MslResourceMapping.m_Count = spec.m_MslResourceCount;
-        if (spec.m_Language == dmGraphics::ShaderDesc::LANGUAGE_HLSL_51)
+        if (spec.m_Language == dmGraphics::ShaderDesc::LANGUAGE_HLSL_60)
         {
             bool vertex = spec.m_Type == dmGraphics::ShaderDesc::SHADER_TYPE_VERTEX;
             shader.m_HlslResourceMapping.m_Data = (dmGraphics::ShaderDesc::HLSLResourceMapping*) (vertex ? HLSL_VERTEX_RESOURCES : HLSL_FRAGMENT_RESOURCES);

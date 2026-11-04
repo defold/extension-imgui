@@ -59,6 +59,41 @@ DefoldImGui_RegisterDrawCallback(Draw, 0);
 
 Callbacks run on the render thread/post-render callback where extension-imgui renders. Do not call `ImGui::NewFrame()`, `ImGui::Render()`, or backend render functions from the callback.
 
+### Rendering the UI inside the engine render pipeline
+
+By default the ImGui frame is drawn in the `POST_RENDER` extension callback, i.e.
+straight to the default target after the render script finished. The UI therefore
+bypasses every render script pass (post processing, transitions, blur, ...).
+
+To let the engine pipeline see the UI, draw the frame into an offscreen target
+owned by the extension and composite it from the render script:
+
+```lua
+-- render script update(), before recording any render command
+local ui_texture = imgui.render_to_texture()   -- 0 when nothing was drawn
+...
+render.set_render_target(self.target)          -- any render target of your pipeline
+render.enable_texture(0, ui_texture)
+-- the offscreen target contains premultiplied alpha, so blend premultiplied
+render.set_blend_func(graphics.BLEND_FACTOR_ONE, graphics.BLEND_FACTOR_ONE_MINUS_SRC_ALPHA)
+render.draw(self.fullscreen_quad)              -- samples the UI texture
+render.disable_texture(0)
+```
+
+Notes:
+
+* Call it from the render script update. The extension issues `dmGraphics` calls
+  immediately, so the UI has to be drawn before the command stream that
+  composites it is recorded.
+* `POST_RENDER` skips its own draw when the frame was already rendered offscreen,
+  so the UI never shows up twice.
+* The offscreen target is allocated at `DisplaySize * FramebufferScale` and is
+  recreated whenever that size changes.
+* Scissor coordinates are flipped when drawing into the offscreen target: unlike
+  the swapchain there is no negative-height viewport, so the scissor origin is the
+  bottom-left corner. Without the flip, small clip rects (popups, tooltips) are
+  clipped at their mirrored position.
+
 ### How to generate API docs
 
 * Download and unpack https://github.com/britzl/generatedocs/archive/refs/heads/main.zip

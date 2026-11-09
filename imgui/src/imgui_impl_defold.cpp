@@ -869,14 +869,15 @@ dmGraphics::HTexture ImGui_ImplDefold_RenderToTexture(uint32_t* out_width, uint3
     }
 
     dmGraphics::HContext context = g_Renderer.m_Context;
-    dmGraphics::SetRenderTarget(context, g_Renderer.m_OffscreenTarget, 0);
+    dmGraphics::RenderTargetBindingParams binding_params = {};
+    dmGraphics::SetRenderTarget(context, g_Renderer.m_OffscreenTarget, binding_params);
     // Transparent clear: pixels the UI does not cover keep alpha = 0 so the
     // compositing pass in the render script lets the scene show through.
     dmGraphics::Clear(context, dmGraphics::BUFFER_TYPE_COLOR0_BIT, 0, 0, 0, 0, 1.0f, 0);
     g_Renderer.m_RenderingToTexture = true;
     ImGui_ImplDefold_RenderDrawData(draw_data);
     g_Renderer.m_RenderingToTexture = false;
-    dmGraphics::SetRenderTarget(context, 0, 0);
+    dmGraphics::SetRenderTarget(context, 0, binding_params);
 
     *out_width  = g_Renderer.m_OffscreenWidth;
     *out_height = g_Renderer.m_OffscreenHeight;

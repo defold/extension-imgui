@@ -67,13 +67,20 @@ namespace
         uint32_t                            m_MslResourceCount;
     };
 
-    static const ShaderResourceSpec STANDARD_SHADER_RESOURCES[] = {
+    static const ShaderResourceSpec OPENGL_SHADER_RESOURCES[] = {
         { "/imgui/shaders/imgui_glsl_330.vert.glsl", dmGraphics::ShaderDesc::SHADER_TYPE_VERTEX,   dmGraphics::ShaderDesc::LANGUAGE_GLSL_SM330, 0, 0 },
         { "/imgui/shaders/imgui_glsl_330.frag.glsl", dmGraphics::ShaderDesc::SHADER_TYPE_FRAGMENT, dmGraphics::ShaderDesc::LANGUAGE_GLSL_SM330, 0, 0 },
+    };
+
+    // Keep both GLES versions: Defold selects the one supported by the context.
+    static const ShaderResourceSpec OPENGLES_SHADER_RESOURCES[] = {
         { "/imgui/shaders/imgui_gles_300.vert.glsl", dmGraphics::ShaderDesc::SHADER_TYPE_VERTEX,   dmGraphics::ShaderDesc::LANGUAGE_GLES_SM300, 0, 0 },
         { "/imgui/shaders/imgui_gles_300.frag.glsl", dmGraphics::ShaderDesc::SHADER_TYPE_FRAGMENT, dmGraphics::ShaderDesc::LANGUAGE_GLES_SM300, 0, 0 },
         { "/imgui/shaders/imgui_gles_100.vert.glsl", dmGraphics::ShaderDesc::SHADER_TYPE_VERTEX,   dmGraphics::ShaderDesc::LANGUAGE_GLES_SM100, 0, 0 },
         { "/imgui/shaders/imgui_gles_100.frag.glsl", dmGraphics::ShaderDesc::SHADER_TYPE_FRAGMENT, dmGraphics::ShaderDesc::LANGUAGE_GLES_SM100, 0, 0 },
+    };
+
+    static const ShaderResourceSpec VULKAN_SHADER_RESOURCES[] = {
         { "/imgui/shaders/imgui.spv.vert",           dmGraphics::ShaderDesc::SHADER_TYPE_VERTEX,   dmGraphics::ShaderDesc::LANGUAGE_SPIRV, 0, 0 },
         { "/imgui/shaders/imgui.spv.frag",           dmGraphics::ShaderDesc::SHADER_TYPE_FRAGMENT, dmGraphics::ShaderDesc::LANGUAGE_SPIRV, 0, 0 },
     };
@@ -93,7 +100,7 @@ namespace
         { "/imgui/shaders/imgui_hlsl_60.frag.dxil", dmGraphics::ShaderDesc::SHADER_TYPE_FRAGMENT, dmGraphics::ShaderDesc::LANGUAGE_HLSL_60, 0, 0 },
     };
 
-    static const uint32_t MAX_SHADER_RESOURCE_COUNT = sizeof(STANDARD_SHADER_RESOURCES) / sizeof(STANDARD_SHADER_RESOURCES[0]);
+    static const uint32_t MAX_SHADER_RESOURCE_COUNT = sizeof(OPENGLES_SHADER_RESOURCES) / sizeof(OPENGLES_SHADER_RESOURCES[0]);
 
     struct LoadedShaderResource
     {
@@ -142,6 +149,28 @@ namespace
     static const ShaderResourceSpec* GetShaderResources(uint32_t* count, bool* separate_texture_sampler)
     {
         dmGraphics::AdapterFamily family = dmGraphics::GetInstalledAdapterFamily();
+#if defined(DM_PLATFORM_ANDROID) || defined(DM_PLATFORM_IOS) || defined(DM_PLATFORM_HTML5)
+        // These platforms can register the OpenGL adapter while using GLES/WebGL.
+        if (family == dmGraphics::ADAPTER_FAMILY_OPENGL)
+            family = dmGraphics::ADAPTER_FAMILY_OPENGLES;
+#endif
+        *count = 0;
+        *separate_texture_sampler = false;
+        if (family == dmGraphics::ADAPTER_FAMILY_VULKAN)
+        {
+            *count = sizeof(VULKAN_SHADER_RESOURCES) / sizeof(VULKAN_SHADER_RESOURCES[0]);
+            return VULKAN_SHADER_RESOURCES;
+        }
+        if (family == dmGraphics::ADAPTER_FAMILY_OPENGL)
+        {
+            *count = sizeof(OPENGL_SHADER_RESOURCES) / sizeof(OPENGL_SHADER_RESOURCES[0]);
+            return OPENGL_SHADER_RESOURCES;
+        }
+        if (family == dmGraphics::ADAPTER_FAMILY_OPENGLES)
+        {
+            *count = sizeof(OPENGLES_SHADER_RESOURCES) / sizeof(OPENGLES_SHADER_RESOURCES[0]);
+            return OPENGLES_SHADER_RESOURCES;
+        }
         if (family == dmGraphics::ADAPTER_FAMILY_DIRECTX)
         {
             *count = sizeof(DIRECTX_SHADER_RESOURCES) / sizeof(DIRECTX_SHADER_RESOURCES[0]);
@@ -161,9 +190,8 @@ namespace
             return WEBGPU_SHADER_RESOURCES;
         }
 
-        *count = sizeof(STANDARD_SHADER_RESOURCES) / sizeof(STANDARD_SHADER_RESOURCES[0]);
-        *separate_texture_sampler = false;
-        return STANDARD_SHADER_RESOURCES;
+        dmLogError("Unsupported ImGui graphics adapter family: %d", (int) family);
+        return 0;
     }
 
     static void FreeShaderResources(LoadedShaderResource* resources, uint32_t resource_count)
@@ -434,6 +462,8 @@ namespace
         uint32_t shader_resource_count = 0;
         bool separate_texture_sampler = false;
         const ShaderResourceSpec* specs = GetShaderResources(&shader_resource_count, &separate_texture_sampler);
+        if (!specs)
+            return false;
         LoadedShaderResource shader_resources[MAX_SHADER_RESOURCE_COUNT];
         if (!LoadShaderResources(specs, shader_resource_count, shader_resources))
             return false;
